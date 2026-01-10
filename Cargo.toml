@@ -7,7 +7,8 @@ license = "MIT"
 
 [features]
 default = []
-real-camera = ["nokhwa"]
+real-camera = ["v4l"]
+nokhwa-camera = ["nokhwa"]
 
 [dependencies]
 # Async runtime
@@ -25,6 +26,7 @@ image = "0.25"
 
 # Camera capture (optional)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
+v4l = { version = "0.14", optional = true }
 
 # ML inference (ONNX)
 ort = { version = "2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }

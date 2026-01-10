@@ -24,6 +24,16 @@ enum Commands {
         #[arg(short, long, default_value = "config.toml")]
         config: PathBuf,
     },
+    /// Capture a single frame from camera and run detection
+    #[cfg(feature = "real-camera")]
+    TestCamera {
+        /// Camera device path
+        #[arg(short, long, default_value = "/dev/video0")]
+        device: String,
+        /// Save captured frame to this path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Test detection on an image file
     TestImage {
         /// Path to image file
@@ -75,6 +85,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Run { config } => run_daemon(config).await,
+        #[cfg(feature = "real-camera")]
+        Commands::TestCamera { device, output } => test_camera(device, output).await,
         Commands::TestImage {
             image,
             model,
@@ -98,6 +110,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     info!("Configuration loaded successfully");
 
     // Initialize camera
+    #[cfg(feature = "real-camera")]
+    let camera = camera::V4L2Camera::new(
+        &config.camera.device_path,
+        config.camera.frame_width,
+        config.camera.frame_height,
+        config.camera.fps,
+    )
+    .context("Failed to initialize camera")?;
+
+    #[cfg(not(feature = "real-camera"))]
     let camera = camera::StubCamera::new(
         &config.camera.device_path,
         config.camera.frame_width,
@@ -167,6 +189,70 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     })?;
 
     info!("Cat detector stopped");
+    Ok(())
+}
+
+#[cfg(feature = "real-camera")]
+async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
+    use camera::CameraCapture;
+    use detector::CatDetector;
+
+    info!("Testing camera: {}", device);
+
+    // Initialize camera
+    let mut cam = camera::V4L2Camera::new(&device, 640, 480, 30)
+        .context("Failed to initialize camera")?;
+    info!("Camera initialized");
+
+    // Capture a frame
+    info!("Capturing frame...");
+    let frame = cam.capture_frame().await.context("Failed to capture frame")?;
+    info!("Captured frame: {}x{}", frame.width(), frame.height());
+
+    // Save if output path specified
+    if let Some(ref path) = output {
+        frame.save(path).context("Failed to save frame")?;
+        info!("Saved frame to {:?}", path);
+    }
+
+    // Run detection
+    info!("Running detection...");
+    let detector = detector::OnnxDetector::new_with_size(
+        std::path::Path::new("models/yolox_s.onnx"),
+        0.5,
+        15,
+        640,
+    )
+    .context("Failed to initialize detector")?;
+
+    let start = std::time::Instant::now();
+    let detections = detector.detect(&frame).await?;
+    let elapsed = start.elapsed();
+    info!("Detection completed in {:?}", elapsed);
+
+    if detections.is_empty() {
+        println!("\nNo objects detected");
+    } else {
+        println!("\nDetected {} object(s):", detections.len());
+        for (i, det) in detections.iter().enumerate() {
+            let class_name = coco_class_name(det.class_id);
+            let is_cat = detector.is_cat(det);
+            println!(
+                "  {}. {} (class {}) - confidence: {:.1}%{}",
+                i + 1,
+                class_name,
+                det.class_id,
+                det.confidence * 100.0,
+                if is_cat { " [CAT!]" } else { "" }
+            );
+        }
+
+        let cat_count = detections.iter().filter(|d| detector.is_cat(d)).count();
+        if cat_count > 0 {
+            println!("\n==> {} cat(s) found!", cat_count);
+        }
+    }
+
     Ok(())
 }
 

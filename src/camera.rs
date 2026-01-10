@@ -20,12 +20,123 @@ pub trait CameraCapture: Send + Sync {
     fn is_available(&self) -> bool;
 }
 
+/// Real camera using v4l crate (pure Rust V4L2) - Linux only
 #[cfg(feature = "real-camera")]
+pub struct V4L2Camera {
+    device: std::sync::Mutex<v4l::Device>,
+    stream: std::sync::Mutex<Option<v4l::io::mmap::Stream<'static>>>,
+    #[allow(dead_code)]
+    width: u32,
+    #[allow(dead_code)]
+    height: u32,
+}
+
+#[cfg(feature = "real-camera")]
+impl V4L2Camera {
+    pub fn new(device_path: &str, width: u32, height: u32, _fps: u32) -> Result<Self, CameraError> {
+        use v4l::video::Capture;
+
+        let device = v4l::Device::with_path(device_path)
+            .map_err(|e| CameraError::InitError(format!("Failed to open {}: {}", device_path, e)))?;
+
+        // Try MJPG format first (most compatible)
+        let mut fmt = device.format().map_err(|e| {
+            CameraError::InitError(format!("Failed to get format: {}", e))
+        })?;
+
+        fmt.width = width;
+        fmt.height = height;
+        fmt.fourcc = v4l::FourCC::new(b"MJPG");
+
+        let fmt = device.set_format(&fmt).map_err(|e| {
+            CameraError::InitError(format!("Failed to set format: {}", e))
+        })?;
+
+        tracing::info!(
+            "Camera configured: {}x{} {:?}",
+            fmt.width,
+            fmt.height,
+            fmt.fourcc
+        );
+
+        Ok(Self {
+            device: std::sync::Mutex::new(device),
+            stream: std::sync::Mutex::new(None),
+            width: fmt.width,
+            height: fmt.height,
+        })
+    }
+
+    fn ensure_stream(&self) -> Result<(), CameraError> {
+        use v4l::io::mmap::Stream;
+
+        let mut stream_guard = self.stream.lock().map_err(|e| {
+            CameraError::CaptureError(format!("Failed to lock stream: {}", e))
+        })?;
+
+        if stream_guard.is_none() {
+            let device_guard = self.device.lock().map_err(|e| {
+                CameraError::CaptureError(format!("Failed to lock device: {}", e))
+            })?;
+
+            // Create a stream with memory-mapped buffers
+            // We need to use unsafe to extend the lifetime
+            let device_ptr = &*device_guard as *const v4l::Device;
+            let stream = unsafe {
+                Stream::with_buffers(&*device_ptr, v4l::buffer::Type::VideoCapture, 4)
+                    .map_err(|e| CameraError::InitError(format!("Failed to create stream: {}", e)))?
+            };
+
+            *stream_guard = Some(stream);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "real-camera")]
+#[async_trait]
+impl CameraCapture for V4L2Camera {
+    async fn capture_frame(&mut self) -> Result<DynamicImage, CameraError> {
+        use v4l::io::traits::CaptureStream;
+
+        self.ensure_stream()?;
+
+        let frame_data = {
+            let mut stream_guard = self.stream.lock().map_err(|e| {
+                CameraError::CaptureError(format!("Failed to lock stream: {}", e))
+            })?;
+
+            let stream = stream_guard.as_mut().ok_or_else(|| {
+                CameraError::CaptureError("Stream not initialized".to_string())
+            })?;
+
+            let (buf, _meta) = stream.next().map_err(|e| {
+                CameraError::CaptureError(format!("Failed to capture frame: {}", e))
+            })?;
+
+            buf.to_vec()
+        };
+
+        // Decode the MJPG frame
+        let img = image::load_from_memory(&frame_data).map_err(|e| {
+            CameraError::CaptureError(format!("Failed to decode frame: {}", e))
+        })?;
+
+        Ok(img)
+    }
+
+    fn is_available(&self) -> bool {
+        self.device.lock().is_ok()
+    }
+}
+
+#[cfg(feature = "nokhwa-camera")]
 pub struct NokhwaCamera {
     camera: nokhwa::Camera,
 }
 
-#[cfg(feature = "real-camera")]
+#[cfg(feature = "nokhwa-camera")]
 impl NokhwaCamera {
     pub fn new(device_path: &str, width: u32, height: u32, fps: u32) -> Result<Self, CameraError> {
         use nokhwa::pixel_format::RgbFormat;
@@ -41,7 +152,7 @@ impl NokhwaCamera {
     }
 }
 
-#[cfg(feature = "real-camera")]
+#[cfg(feature = "nokhwa-camera")]
 #[async_trait]
 impl CameraCapture for NokhwaCamera {
     async fn capture_frame(&mut self) -> Result<DynamicImage, CameraError> {

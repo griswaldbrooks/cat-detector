@@ -1,8 +1,8 @@
 # Cat Detector - Next Steps for Development
 
-## Project Status: MVP Complete
+## Project Status: Ready for Use
 
-The cat-detector application is fully implemented and compiles successfully. All 50 unit tests pass. The codebase is ready for integration testing with real hardware.
+The cat-detector application is fully implemented with real camera support. All 50 unit tests + 9 integration tests pass. The application can detect cats using a webcam.
 
 ## What's Been Built
 
@@ -10,174 +10,172 @@ The cat-detector application is fully implemented and compiles successfully. All
 ```
 src/
 ├── main.rs      - CLI entry point (clap-based)
+├── lib.rs       - Library exports
 ├── config.rs    - TOML configuration parsing
-├── camera.rs    - CameraCapture trait + StubCamera
-├── detector.rs  - CatDetector trait + OnnxDetector (YOLOv8)
+├── camera.rs    - CameraCapture trait + V4L2Camera + StubCamera
+├── detector.rs  - CatDetector trait + OnnxDetector (YOLOX)
 ├── tracker.rs   - Hysteresis-based enter/exit detection
 ├── storage.rs   - ImageStorage trait + FileSystemStorage
 ├── notifier.rs  - Notifier trait + SignalNotifier
 ├── app.rs       - Main detection loop with dependency injection
 └── service.rs   - Systemd service management
+
+tests/
+└── integration_test.rs - Real model integration tests
 ```
 
-### Key Design Decisions
-1. **Trait-based abstractions** - All external dependencies (camera, ML, storage, notifications) are behind traits for testability
-2. **Dynamic ONNX loading** - Uses `ort` crate with `load-dynamic` feature to avoid glibc linking issues
-3. **Hysteresis tracking** - Configurable thresholds prevent false triggers from brief detections/gaps
-4. **No real camera in default build** - `nokhwa` is behind `real-camera` feature flag (wasn't needed for MVP)
+### Key Features
+1. **YOLOX-S Detection** - 90%+ confidence on clear cat images, ~100ms inference
+2. **Real Camera Support** - V4L2 capture via pure-Rust `v4l` crate
+3. **Hysteresis Tracking** - Prevents false triggers from brief detections
+4. **Signal Notifications** - Alert when cat enters/exits via signal-cli
+5. **Systemd Integration** - Run as a background service
 
-## To Run the Application
+## Quick Start
 
-### 1. Get the ONNX Model
-The project uses YOLOX-tiny, which is already downloaded to `models/yolox_tiny.onnx` (20MB).
-
-If you need to re-download it:
+### 1. Download ONNX Runtime (v1.23+)
 ```bash
-wget -O models/yolox_tiny.onnx "https://huggingface.co/hr16/yolox-onnx/resolve/main/yolox_tiny.onnx"
+mkdir -p onnxruntime && cd onnxruntime
+curl -sL https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz | tar xz --strip-components=1
+cd ..
+export ORT_DYLIB_PATH=$PWD/onnxruntime/lib/libonnxruntime.so
 ```
 
-Alternative models available from the same repo:
-- `yolox_nano.onnx` - Smaller, better for Raspberry Pi
-- `yolox_s.onnx` - More accurate, good for desktop
-
-### 2. Install ONNX Runtime
-Since we use `load-dynamic`, you need the ONNX Runtime shared library:
+### 2. Download YOLOX Model
 ```bash
-# Ubuntu/Debian
-# Download from https://github.com/microsoft/onnxruntime/releases
-# Or install via package manager if available
-
-# Set library path
-export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
+mkdir -p models
+wget -O models/yolox_s.onnx "https://huggingface.co/hr16/yolox-onnx/resolve/main/yolox_s.onnx"
 ```
 
-### 3. Create Config
+### 3. Build with Camera Support
+```bash
+cargo build --release --features real-camera
+```
+
+### 4. Test Camera
+```bash
+./target/release/cat-detector test-camera -o test_frame.jpg
+```
+
+### 5. Test Detection on Image
+```bash
+./target/release/cat-detector test-image path/to/image.jpg
+```
+
+### 6. Run the Daemon
 ```bash
 cp config.example.toml config.toml
-# Edit config.toml - especially:
-#   - camera.device_path (e.g., /dev/video0)
-#   - detector.model_path (models/yolov8n.onnx)
-#   - storage.output_dir (where to save images)
-```
-
-### 4. Run
-```bash
-cargo run --release -- run --config config.toml
+# Edit config.toml as needed
+./target/release/cat-detector run --config config.toml
 ```
 
 ## What Needs Work
 
-### High Priority
-
-1. **Real Camera Integration**
-   - Currently using `StubCamera` which returns blank images
-   - Need to enable `real-camera` feature and fix `nokhwa` integration
-   - Alternative: implement V4L2 capture directly or use `opencv` crate
-   ```rust
-   // In main.rs, replace StubCamera with real camera:
-   // let camera = NokhwaCamera::new(...)?;
-   ```
-
-2. **ONNX Runtime Setup**
-   - Document exact ONNX Runtime version needed
-   - Consider bundling or providing download script
-   - Test with actual model inference
-
 ### Medium Priority
 
-3. **Signal-CLI Integration Testing**
+1. **Signal-CLI Integration Testing**
    - `SignalNotifier` shells out to `signal-cli`
    - Needs testing with actual signal-cli installation
    - Consider adding setup verification command
 
-4. **Systemd Service**
+2. **Systemd Service Testing**
    - `service.rs` generates service file but untested
    - Needs testing on actual Linux system with systemd
    - May need user/group configuration
 
-5. **Error Recovery**
+3. **Error Recovery**
    - App continues on camera/detector errors but could be more robust
    - Consider exponential backoff on repeated failures
-   - Add health check endpoint?
 
 ### Low Priority / Nice to Have
 
-6. **Real Camera Feature**
-   - Fix `nokhwa` compilation issues or
-   - Switch to `v4l` crate for Linux-only support
-   - Add camera auto-detection
-
-7. **Web Dashboard**
+4. **Web Dashboard**
    - Add simple HTTP server to view captures
    - Real-time detection status
    - Configuration UI
 
-8. **Multiple Cat Tracking**
+5. **Multiple Cat Tracking**
    - Current implementation just detects "cat present"
    - Could track individual cats with bounding boxes
    - Count distinct cats
 
-9. **Cloud Storage**
+6. **Cloud Storage**
    - Add S3/GCS upload option
    - Implement `ImageStorage` trait for cloud
 
+7. **Raspberry Pi Support**
+   - Test with `yolox_tiny.onnx` for faster inference
+   - May need ARM-specific ONNX Runtime build
+
+## Model Options
+
+| Model | Size | Input | Inference | Use Case |
+|-------|------|-------|-----------|----------|
+| yolox_s.onnx | 35MB | 640x640 | ~100ms | Desktop (default) |
+| yolox_tiny.onnx | 20MB | 416x416 | ~30ms | Raspberry Pi |
+
+Download from: https://huggingface.co/hr16/yolox-onnx
+
 ## Test Coverage
 
-| Module | Tests | Coverage |
-|--------|-------|----------|
-| config.rs | 7 | Config parsing, validation, defaults |
-| camera.rs | 4 | Mock camera cycling, availability |
-| detector.rs | 7 | Mock detector, IOU calculation |
-| tracker.rs | 12 | All state transitions, hysteresis |
-| storage.rs | 5 | Mock storage, filename format |
-| notifier.rs | 8 | Mock notifier, message format |
-| app.rs | 5 | Integration with mocks |
-| service.rs | 2 | Service file generation |
+| Module | Unit Tests | Integration Tests |
+|--------|------------|-------------------|
+| config.rs | 7 | - |
+| camera.rs | 4 | - |
+| detector.rs | 7 | 9 (with real model) |
+| tracker.rs | 12 | - |
+| storage.rs | 5 | - |
+| notifier.rs | 8 | - |
+| app.rs | 5 | - |
+| service.rs | 2 | - |
+| **Total** | **50** | **9** |
 
-## Known Issues
-
-1. **ONNX Runtime Linking** - Requires `load-dynamic` feature due to glibc version mismatch with pre-built binaries
-
-2. **Camera Feature Disabled** - `nokhwa` had compilation issues; disabled by default
-
-## File Locations
-
-- **Config example**: `config.example.toml`
-- **Documentation**: `README.md`
-- **Model directory**: `models/` (create and add yolov8n.onnx)
-- **Output directory**: Configured in config.toml, default `captures/`
-
-## Build Commands
-
+Run tests:
 ```bash
-# Development build
-cargo build
+# Unit tests (no dependencies)
+cargo test --lib
 
-# Release build
-cargo build --release
+# Integration tests (needs model + ONNX Runtime)
+ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test integration_test
+```
 
-# Run tests
-cargo test
+## Configuration
 
-# Run with real camera (if nokhwa issues are fixed)
-cargo build --features real-camera
+See `config.example.toml` for all options. Key settings:
 
-# Check for issues
-cargo clippy
+```toml
+[camera]
+device_path = "/dev/video0"
+frame_width = 640
+frame_height = 480
+
+[detector]
+model_path = "models/yolox_s.onnx"
+input_size = 640
+confidence_threshold = 0.5
+
+[tracking]
+enter_threshold = 3      # Consecutive detections to confirm entry
+exit_threshold = 5       # Consecutive non-detections to confirm exit
+sample_interval_secs = 10
+
+[notification]
+enabled = false
+# recipient = "+1234567890"
 ```
 
 ## Architecture Notes
 
 ### Detection Flow
 ```
-Camera Frame → YOLOv8 Inference → Cat Detected? → Tracker State Machine
-                                                        ↓
-                                    ┌───────────────────┴───────────────────┐
-                                    ↓                   ↓                   ↓
-                              CatEntered          SampleDue            CatExited
-                                    ↓                   ↓                   ↓
-                              Save Image          Save Image          Save Image
-                              + Notify                                 + Notify
+Camera Frame -> YOLOX Inference -> Cat Detected? -> Tracker State Machine
+                                                          |
+                                   +----------------------+----------------------+
+                                   v                      v                      v
+                             CatEntered              SampleDue              CatExited
+                                   |                      |                      |
+                             Save Image              Save Image              Save Image
+                             + Notify                                        + Notify
 ```
 
 ### Hysteresis Logic
