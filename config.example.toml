@@ -1,0 +1,53 @@
+# Cat Detector Configuration
+# Copy this file to config.toml and adjust settings as needed
+
+[camera]
+# Path to the webcam device
+device_path = "/dev/video0"
+# Frame dimensions
+frame_width = 640
+frame_height = 480
+# Frames per second (affects detection frequency)
+fps = 30
+
+[detector]
+# Path to the YOLOX ONNX model file
+# yolox_s.onnx (35MB, 640x640) - better accuracy, ~100ms inference
+# yolox_tiny.onnx (20MB, 416x416) - faster, ~30ms inference
+model_path = "models/yolox_s.onnx"
+# Model input size (640 for yolox_s, 416 for yolox_tiny)
+input_size = 640
+# Minimum confidence score for detection (0.0 - 1.0)
+confidence_threshold = 0.5
+# COCO class ID for cat (15 is the standard)
+cat_class_id = 15
+
+[storage]
+# Directory where captured images will be saved
+output_dir = "captures"
+# Image format: "jpg" or "png"
+image_format = "jpg"
+# JPEG quality (1-100, only used if format is jpg)
+jpeg_quality = 85
+
+[notification]
+# Enable/disable Signal notifications
+enabled = false
+# Path to signal-cli executable (optional, defaults to /usr/local/bin/signal-cli)
+# signal_cli_path = "/usr/local/bin/signal-cli"
+# Phone number to send notifications to (required if enabled)
+# recipient = "+1234567890"
+# Send notification when cat enters
+notify_on_enter = true
+# Send notification when cat exits
+notify_on_exit = true
+
+[tracking]
+# How often to save sample images while cat is present (seconds)
+sample_interval_secs = 10
+# Number of consecutive detections required to confirm cat entered
+enter_threshold = 3
+# Number of consecutive non-detections required to confirm cat left
+exit_threshold = 5
+# Milliseconds between detection checks
+detection_interval_ms = 500

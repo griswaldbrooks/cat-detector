@@ -1,0 +1,21 @@
+# Build artifacts
+/target
+
+# ONNX models (download separately - see README)
+/models/*.onnx
+
+# ONNX Runtime (download separately - see README)
+/onnxruntime/
+
+# Test images (personal photos)
+/test_images/
+
+# Runtime files
+/captures/
+config.toml
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

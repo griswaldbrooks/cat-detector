@@ -1,0 +1,61 @@
+[package]
+name = "cat-detector"
+version = "0.1.0"
+edition = "2021"
+description = "A webcam-based cat detection application with notifications"
+license = "MIT"
+
+[features]
+default = []
+real-camera = ["nokhwa"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Image processing
+image = "0.25"
+
+# Camera capture (optional)
+nokhwa = { version = "0.10", features = ["input-native"], optional = true }
+
+# ML inference (ONNX)
+ort = { version = "2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
+ndarray = "0.16"
+
+# System
+libc = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async traits
+async-trait = "0.1"
+
+[dev-dependencies]
+mockall = "0.13"
+tempfile = "3"
+tokio-test = "0.4"
+
+[lib]
+name = "cat_detector"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cat-detector"
+path = "src/main.rs"
