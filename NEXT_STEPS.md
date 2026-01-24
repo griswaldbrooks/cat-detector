@@ -2,7 +2,7 @@
 
 ## Project Status: Ready for Use
 
-The cat-detector application is fully implemented with real camera support. All 50 unit tests + 9 integration tests pass. The application can detect cats using a webcam.
+The cat-detector application is fully implemented with real camera support and a web dashboard. All 62 unit tests + 9 integration tests pass. The application can detect cats using a webcam and stream live video with bounding boxes.
 
 ## What's Been Built
 
@@ -18,7 +18,8 @@ src/
 ├── storage.rs   - ImageStorage trait + FileSystemStorage
 ├── notifier.rs  - Notifier trait + SignalNotifier
 ├── app.rs       - Main detection loop with dependency injection
-└── service.rs   - Systemd service management
+├── service.rs   - Systemd service management
+└── web.rs       - Web dashboard with live MJPEG stream (feature: web)
 
 tests/
 └── integration_test.rs - Real model integration tests
@@ -30,6 +31,7 @@ tests/
 3. **Hysteresis Tracking** - Prevents false triggers from brief detections
 4. **Signal Notifications** - Alert when cat enters/exits via signal-cli
 5. **Systemd Integration** - Run as a background service
+6. **Web Dashboard** - Live MJPEG stream with bounding boxes, status API, captures list (feature: `web`)
 
 ## Quick Start
 
@@ -89,21 +91,16 @@ cp config.example.toml config.toml
 
 ### Low Priority / Nice to Have
 
-4. **Web Dashboard**
-   - Add simple HTTP server to view captures
-   - Real-time detection status
-   - Configuration UI
-
-5. **Multiple Cat Tracking**
+4. **Multiple Cat Tracking**
    - Current implementation just detects "cat present"
    - Could track individual cats with bounding boxes
    - Count distinct cats
 
-6. **Cloud Storage**
+5. **Cloud Storage**
    - Add S3/GCS upload option
    - Implement `ImageStorage` trait for cloud
 
-7. **Raspberry Pi Support**
+6. **Raspberry Pi Support**
    - Test with `yolox_tiny.onnx` for faster inference
    - May need ARM-specific ONNX Runtime build
 
@@ -128,7 +125,8 @@ Download from: https://huggingface.co/hr16/yolox-onnx
 | notifier.rs | 8 | - |
 | app.rs | 5 | - |
 | service.rs | 2 | - |
-| **Total** | **50** | **9** |
+| web.rs | 12 | - |
+| **Total** | **62** | **9** |
 
 Run tests:
 ```bash
