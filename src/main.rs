@@ -1,9 +1,10 @@
-use cat_detector::{app, camera, config, detector, notifier, service, storage};
+use cat_detector::{camera, config, detector, notifier, service, storage, web};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tokio::sync::watch;
+use std::sync::Arc;
+use tokio::sync::{watch, RwLock};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -70,6 +71,16 @@ enum Commands {
         #[arg(short, long)]
         config: PathBuf,
     },
+    /// Run only the web dashboard (for testing)
+    #[cfg(feature = "web")]
+    Web {
+        /// Port to bind to
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+        /// Address to bind to
+        #[arg(short, long, default_value = "0.0.0.0")]
+        bind: String,
+    },
 }
 
 #[tokio::main]
@@ -98,6 +109,8 @@ async fn main() -> Result<()> {
         Commands::Status => show_status().await,
         Commands::Start { config } => start_service(config).await,
         Commands::Stop { config } => stop_service(config).await,
+        #[cfg(feature = "web")]
+        Commands::Web { port, bind } => run_web_only(bind, port).await,
     }
 }
 
@@ -109,9 +122,44 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     info!("Configuration loaded successfully");
 
+    // Setup shutdown signal handler
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_rx_web = shutdown_rx.clone();
+
+    // Handle Ctrl+C
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received Ctrl+C, initiating shutdown...");
+        let _ = shutdown_tx.send(true);
+    });
+
+    // Setup web state and frame channel if web is enabled
+    #[cfg(feature = "web")]
+    let (web_state, frame_tx) = if config.web.enabled {
+        let state = Arc::new(RwLock::new(web::WebAppState::new()));
+        let (tx, rx) = web::create_frame_channel();
+
+        // Start web server
+        let web_config = config.web.clone();
+        let web_state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = web::run_server(&web_config, web_state_clone, rx, shutdown_rx_web).await {
+                error!("Web server error: {}", e);
+            }
+        });
+
+        info!("Web dashboard enabled at http://{}:{}", config.web.bind_address, config.web.port);
+        (Some(state), Some(tx))
+    } else {
+        (None, None)
+    };
+
+    #[cfg(not(feature = "web"))]
+    let (web_state, frame_tx): (Option<Arc<RwLock<web::WebAppState>>>, Option<web::FrameSender>) = (None, None);
+
     // Initialize camera
     #[cfg(feature = "real-camera")]
-    let camera = camera::V4L2Camera::new(
+    let mut cam = camera::V4L2Camera::new(
         &config.camera.device_path,
         config.camera.frame_width,
         config.camera.frame_height,
@@ -120,7 +168,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     #[cfg(not(feature = "real-camera"))]
-    let camera = camera::StubCamera::new(
+    let mut cam = camera::StubCamera::new(
         &config.camera.device_path,
         config.camera.frame_width,
         config.camera.frame_height,
@@ -129,24 +177,24 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     // Initialize detector
-    let detector = detector::OnnxDetector::new_with_size(
+    let det = Arc::new(detector::OnnxDetector::new_with_size(
         &config.detector.model_path,
         config.detector.confidence_threshold,
         config.detector.cat_class_id,
         config.detector.input_size,
     )
-    .context("Failed to initialize detector")?;
+    .context("Failed to initialize detector")?);
 
     // Initialize storage
-    let storage = storage::FileSystemStorage::new(
+    let stor = Arc::new(storage::FileSystemStorage::new(
         config.storage.output_dir.clone(),
         config.storage.image_format.clone(),
         config.storage.jpeg_quality,
     )
-    .context("Failed to initialize storage")?;
+    .context("Failed to initialize storage")?);
 
     // Initialize notifier
-    let notifier = if config.notification.enabled {
+    let notif = Arc::new(if config.notification.enabled {
         let signal_path = config
             .notification
             .signal_cli_path
@@ -166,27 +214,153 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         )
     } else {
         notifier::SignalNotifier::disabled()
-    };
-
-    // Create application
-    let mut app = app::App::new(camera, detector, storage, notifier, &config.tracking);
-
-    // Setup shutdown signal handler
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    // Handle Ctrl+C
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Received Ctrl+C, initiating shutdown...");
-        let _ = shutdown_tx.send(true);
     });
 
-    // Run the application
+    // Create tracker
+    let mut tracker = cat_detector::tracker::CatTracker::new(
+        config.tracking.enter_threshold,
+        config.tracking.exit_threshold,
+        config.tracking.sample_interval_secs,
+    );
+
+    // Mark as detecting in web state
+    if let Some(ref state) = web_state {
+        let mut s = state.write().await;
+        s.detecting = true;
+    }
+
     info!("Starting cat detection...");
-    app.run(shutdown_rx).await.map_err(|e| {
-        error!("Application error: {}", e);
-        anyhow::anyhow!("Application error: {}", e)
-    })?;
+
+    // Main detection loop with web integration
+    let mut shutdown = shutdown_rx.clone();
+    loop {
+        // Check for shutdown
+        if *shutdown.borrow() {
+            info!("Shutdown signal received");
+            break;
+        }
+
+        // Capture frame
+        use camera::CameraCapture;
+        use detector::CatDetector;
+        let frame = match cam.capture_frame().await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("Camera error (will retry): {}", e);
+                tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)).await;
+                continue;
+            }
+        };
+
+        let timestamp = chrono::Utc::now();
+
+        // Run detection
+        let detections = match det.detect(&frame).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Detector error (will retry): {}", e);
+                tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)).await;
+                continue;
+            }
+        };
+
+        let cat_detected = detections.iter().any(|d| det.is_cat(d));
+
+        // Update web state with frame and detections
+        if let Some(ref state) = web_state {
+            let mut s = state.write().await;
+            s.update_frame(&frame, &detections);
+            s.cat_present = cat_detected;
+            if cat_detected {
+                s.last_detection = Some(timestamp);
+            }
+        }
+
+        // Send frame to MJPEG stream
+        if let Some(ref tx) = frame_tx {
+            if let Some(ref state) = web_state {
+                let s = state.read().await;
+                if let Some(ref frame_data) = s.latest_frame {
+                    let _ = tx.send(Some(frame_data.clone()));
+                }
+            }
+        }
+
+        // Process through tracker
+        let events = tracker.process_detection(cat_detected, timestamp);
+
+        // Handle events
+        for event in events {
+            use cat_detector::tracker::TrackerEvent;
+            use storage::ImageStorage;
+            use notifier::Notifier;
+
+            match event {
+                TrackerEvent::CatEntered { timestamp } => {
+                    info!("Cat entered at {}", timestamp);
+
+                    let saved = stor.save_image(&frame, storage::ImageType::Entry, timestamp).await?;
+                    info!("Saved entry image: {:?}", saved.path);
+
+                    // Update web captures
+                    if let Some(ref state) = web_state {
+                        let mut s = state.write().await;
+                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Entry));
+                    }
+
+                    if notif.is_enabled() {
+                        if let Err(e) = notif.notify(notifier::NotificationEvent::CatEntered { timestamp }).await {
+                            tracing::warn!("Failed to send entry notification: {}", e);
+                        }
+                    }
+                }
+
+                TrackerEvent::CatExited { timestamp, entry_time } => {
+                    let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
+                    info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
+
+                    let saved = stor.save_image(&frame, storage::ImageType::Exit, timestamp).await?;
+                    info!("Saved exit image: {:?}", saved.path);
+
+                    // Update web captures
+                    if let Some(ref state) = web_state {
+                        let mut s = state.write().await;
+                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Exit));
+                    }
+
+                    if notif.is_enabled() {
+                        if let Err(e) = notif.notify(notifier::NotificationEvent::CatExited { timestamp, duration_secs }).await {
+                            tracing::warn!("Failed to send exit notification: {}", e);
+                        }
+                    }
+                }
+
+                TrackerEvent::SampleDue { timestamp } => {
+                    tracing::debug!("Sample due at {}", timestamp);
+
+                    let saved = stor.save_image(&frame, storage::ImageType::Sample, timestamp).await?;
+                    tracing::debug!("Saved sample image: {:?}", saved.path);
+
+                    // Update web captures
+                    if let Some(ref state) = web_state {
+                        let mut s = state.write().await;
+                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Sample));
+                    }
+                }
+            }
+        }
+
+        // Wait for next detection interval or shutdown
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)) => {}
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("Shutdown signal received during sleep");
+                    break;
+                }
+            }
+        }
+    }
 
     info!("Cat detector stopped");
     Ok(())
@@ -378,5 +552,71 @@ async fn stop_service(config_path: PathBuf) -> Result<()> {
     let service = service::SystemdService::new(config_path)?;
     service.stop().await?;
     info!("Service stopped");
+    Ok(())
+}
+
+#[cfg(feature = "web")]
+async fn run_web_only(bind: String, port: u16) -> Result<()> {
+    info!("Starting web dashboard (standalone mode)");
+
+    let web_config = config::WebConfig {
+        enabled: true,
+        bind_address: bind,
+        port,
+        stream_fps: 5,
+    };
+
+    let state = Arc::new(RwLock::new(web::WebAppState::new()));
+    let (frame_tx, frame_rx) = web::create_frame_channel();
+
+    // Setup shutdown signal handler
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Handle Ctrl+C
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received Ctrl+C, initiating shutdown...");
+        let _ = shutdown_tx.send(true);
+    });
+
+    // Generate test frames in a background task
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        let mut counter = 0u32;
+        loop {
+            // Create a simple test frame
+            let mut img = image::DynamicImage::new_rgb8(640, 480);
+            if let image::DynamicImage::ImageRgb8(ref mut rgb) = img {
+                // Draw a gradient to show something is happening
+                for y in 0..480 {
+                    for x in 0..640 {
+                        let r = ((x + counter) % 256) as u8;
+                        let g = ((y + counter) % 256) as u8;
+                        let b = 128u8;
+                        rgb.put_pixel(x, y, image::Rgb([r, g, b]));
+                    }
+                }
+            }
+
+            // Update state
+            {
+                let mut s = state_clone.write().await;
+                s.update_frame(&img, &[]);
+                if let Some(ref frame_data) = s.latest_frame {
+                    let _ = frame_tx.send(Some(frame_data.clone()));
+                }
+            }
+
+            counter = counter.wrapping_add(5);
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+    });
+
+    info!("Web dashboard available at http://{}:{}", web_config.bind_address, web_config.port);
+
+    web::run_server(&web_config, state, frame_rx, shutdown_rx)
+        .await
+        .map_err(|e| anyhow::anyhow!("Web server error: {}", e))?;
+
     Ok(())
 }

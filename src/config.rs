@@ -20,6 +20,8 @@ pub struct Config {
     pub storage: StorageConfig,
     pub notification: NotificationConfig,
     pub tracking: TrackingConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +187,41 @@ impl Default for TrackingConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_stream_fps")]
+    pub stream_fps: u32,
+}
+
+fn default_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+fn default_stream_fps() -> u32 {
+    5 // 5 fps for stream to reduce bandwidth
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: default_bind_address(),
+            port: default_port(),
+            stream_fps: default_stream_fps(),
+        }
+    }
+}
+
 impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
@@ -209,6 +246,18 @@ impl Config {
         if self.tracking.sample_interval_secs == 0 {
             return Err(ConfigError::ValidationError(
                 "sample_interval_secs must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.web.enabled && self.web.port == 0 {
+            return Err(ConfigError::ValidationError(
+                "web port must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.web.stream_fps == 0 || self.web.stream_fps > 30 {
+            return Err(ConfigError::ValidationError(
+                "stream_fps must be between 1 and 30".to_string(),
             ));
         }
 

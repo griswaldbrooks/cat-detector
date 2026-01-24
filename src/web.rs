@@ -1,0 +1,813 @@
+//! Web dashboard for cat detector
+//!
+//! Provides a web interface for monitoring cat detection status and live streaming.
+
+#[cfg(feature = "web")]
+use axum::{
+    body::Body,
+    extract::State,
+    http::{header, Response, StatusCode},
+    response::{Html, IntoResponse},
+    routing::get,
+    Json, Router,
+};
+#[cfg(feature = "web")]
+use bytes::Bytes;
+#[cfg(feature = "web")]
+use std::convert::Infallible;
+#[cfg(feature = "web")]
+use tokio_stream::wrappers::WatchStream;
+#[cfg(feature = "web")]
+use tokio_stream::StreamExt;
+
+use chrono::{DateTime, Utc};
+use image::{DynamicImage, Rgb, RgbImage};
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{watch, RwLock};
+
+use crate::config::WebConfig;
+use crate::detector::{BoundingBox, Detection};
+use crate::storage::ImageType;
+
+/// Maximum number of recent captures to keep in memory
+const MAX_RECENT_CAPTURES: usize = 50;
+
+/// Shared application state between detection loop and web server
+#[derive(Debug)]
+pub struct WebAppState {
+    /// Whether detection is currently running
+    pub detecting: bool,
+    /// Whether a cat is currently present
+    pub cat_present: bool,
+    /// Timestamp of last detection
+    pub last_detection: Option<DateTime<Utc>>,
+    /// When the app started
+    pub started_at: DateTime<Utc>,
+    /// Recent captures
+    pub recent_captures: VecDeque<CaptureInfo>,
+    /// Latest frame with bounding boxes (JPEG encoded)
+    pub latest_frame: Option<Vec<u8>>,
+    /// Latest detections for the current frame
+    pub current_detections: Vec<Detection>,
+}
+
+impl Default for WebAppState {
+    fn default() -> Self {
+        Self {
+            detecting: false,
+            cat_present: false,
+            last_detection: None,
+            started_at: Utc::now(),
+            recent_captures: VecDeque::new(),
+            latest_frame: None,
+            current_detections: Vec::new(),
+        }
+    }
+}
+
+impl WebAppState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a capture to the recent captures list
+    pub fn add_capture(&mut self, capture: CaptureInfo) {
+        self.recent_captures.push_front(capture);
+        while self.recent_captures.len() > MAX_RECENT_CAPTURES {
+            self.recent_captures.pop_back();
+        }
+    }
+
+    /// Update the latest frame with bounding boxes drawn
+    pub fn update_frame(&mut self, frame: &DynamicImage, detections: &[Detection]) {
+        let annotated = draw_bounding_boxes(frame, detections);
+        if let Ok(jpeg_data) = encode_jpeg(&annotated) {
+            self.latest_frame = Some(jpeg_data);
+        }
+        self.current_detections = detections.to_vec();
+    }
+}
+
+/// Information about a captured image
+#[derive(Debug, Clone, Serialize)]
+pub struct CaptureInfo {
+    pub filename: String,
+    pub timestamp: DateTime<Utc>,
+    #[serde(rename = "type")]
+    pub capture_type: String,
+    pub path: PathBuf,
+}
+
+impl CaptureInfo {
+    pub fn new(path: PathBuf, timestamp: DateTime<Utc>, image_type: ImageType) -> Self {
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let capture_type = match image_type {
+            ImageType::Entry => "entry",
+            ImageType::Exit => "exit",
+            ImageType::Sample => "sample",
+        }
+        .to_string();
+
+        Self {
+            filename,
+            timestamp,
+            capture_type,
+            path,
+        }
+    }
+}
+
+/// Draw bounding boxes on an image
+pub fn draw_bounding_boxes(image: &DynamicImage, detections: &[Detection]) -> DynamicImage {
+    let mut rgb_image = image.to_rgb8();
+    let (width, height) = rgb_image.dimensions();
+
+    for detection in detections {
+        draw_box(&mut rgb_image, &detection.bbox, width, height, detection.confidence);
+    }
+
+    DynamicImage::ImageRgb8(rgb_image)
+}
+
+/// Draw a single bounding box with confidence label
+fn draw_box(image: &mut RgbImage, bbox: &BoundingBox, img_width: u32, img_height: u32, confidence: f32) {
+    let color = Rgb([0u8, 255u8, 0u8]); // Green
+    let thickness = 2;
+
+    let x1 = (bbox.x.max(0.0) as u32).min(img_width.saturating_sub(1));
+    let y1 = (bbox.y.max(0.0) as u32).min(img_height.saturating_sub(1));
+    let x2 = ((bbox.x + bbox.width) as u32).min(img_width.saturating_sub(1));
+    let y2 = ((bbox.y + bbox.height) as u32).min(img_height.saturating_sub(1));
+
+    // Draw horizontal lines (top and bottom)
+    for t in 0..thickness {
+        let y_top = (y1 + t).min(img_height - 1);
+        let y_bottom = y2.saturating_sub(t).min(img_height - 1);
+        for x in x1..=x2 {
+            image.put_pixel(x, y_top, color);
+            image.put_pixel(x, y_bottom, color);
+        }
+    }
+
+    // Draw vertical lines (left and right)
+    for t in 0..thickness {
+        let x_left = (x1 + t).min(img_width - 1);
+        let x_right = x2.saturating_sub(t).min(img_width - 1);
+        for y in y1..=y2 {
+            image.put_pixel(x_left, y, color);
+            image.put_pixel(x_right, y, color);
+        }
+    }
+
+    // Draw confidence label background (simple filled rectangle at top-left of box)
+    let label_height = 16u32;
+    let label_width = 60u32;
+    let label_y_start = y1.saturating_sub(label_height);
+    let label_y_end = y1;
+    let label_x_end = (x1 + label_width).min(img_width - 1);
+
+    for y in label_y_start..label_y_end {
+        for x in x1..label_x_end {
+            if y < img_height && x < img_width {
+                image.put_pixel(x, y, color);
+            }
+        }
+    }
+
+    // Draw confidence text (simplified - just draw percentage as colored blocks)
+    let conf_percent = (confidence * 100.0) as u32;
+    let text_color = Rgb([0u8, 0u8, 0u8]); // Black text on green background
+
+    // Simple digit rendering (3x5 pixel digits)
+    let digit1 = conf_percent / 10;
+    let digit2 = conf_percent % 10;
+
+    draw_digit(image, digit1, x1 + 4, label_y_start + 5, text_color, img_width, img_height);
+    draw_digit(image, digit2, x1 + 12, label_y_start + 5, text_color, img_width, img_height);
+    // Draw '%' sign approximation
+    if x1 + 22 < img_width && label_y_start + 5 < img_height {
+        image.put_pixel(x1 + 20, label_y_start + 5, text_color);
+        image.put_pixel(x1 + 22, label_y_start + 9, text_color);
+    }
+}
+
+/// Draw a simple 3x5 pixel digit
+fn draw_digit(image: &mut RgbImage, digit: u32, x: u32, y: u32, color: Rgb<u8>, max_w: u32, max_h: u32) {
+    // Simple 3x5 digit patterns
+    let patterns: [[u8; 15]; 10] = [
+        [1,1,1, 1,0,1, 1,0,1, 1,0,1, 1,1,1], // 0
+        [0,1,0, 1,1,0, 0,1,0, 0,1,0, 1,1,1], // 1
+        [1,1,1, 0,0,1, 1,1,1, 1,0,0, 1,1,1], // 2
+        [1,1,1, 0,0,1, 1,1,1, 0,0,1, 1,1,1], // 3
+        [1,0,1, 1,0,1, 1,1,1, 0,0,1, 0,0,1], // 4
+        [1,1,1, 1,0,0, 1,1,1, 0,0,1, 1,1,1], // 5
+        [1,1,1, 1,0,0, 1,1,1, 1,0,1, 1,1,1], // 6
+        [1,1,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1], // 7
+        [1,1,1, 1,0,1, 1,1,1, 1,0,1, 1,1,1], // 8
+        [1,1,1, 1,0,1, 1,1,1, 0,0,1, 1,1,1], // 9
+    ];
+
+    let pattern = &patterns[digit as usize % 10];
+    for row in 0..5 {
+        for col in 0..3 {
+            if pattern[row * 3 + col] == 1 {
+                let px = x + col as u32;
+                let py = y + row as u32;
+                if px < max_w && py < max_h {
+                    image.put_pixel(px, py, color);
+                }
+            }
+        }
+    }
+}
+
+/// Encode an image as JPEG
+fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, image::ImageError> {
+    let mut buffer = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buffer);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 80);
+    image.to_rgb8().write_with_encoder(encoder)?;
+    Ok(buffer)
+}
+
+/// API response for /api/status
+#[derive(Serialize)]
+pub struct StatusResponse {
+    pub detecting: bool,
+    pub cat_present: bool,
+    pub last_detection: Option<DateTime<Utc>>,
+    pub uptime_secs: u64,
+    pub detection_count: usize,
+}
+
+/// Shared state type for axum
+#[cfg(feature = "web")]
+pub type SharedWebState = Arc<RwLock<WebAppState>>;
+
+/// Frame sender for MJPEG streaming
+pub type FrameSender = watch::Sender<Option<Vec<u8>>>;
+pub type FrameReceiver = watch::Receiver<Option<Vec<u8>>>;
+
+/// Create a new frame channel for MJPEG streaming
+pub fn create_frame_channel() -> (FrameSender, FrameReceiver) {
+    watch::channel(None)
+}
+
+#[cfg(feature = "web")]
+pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
+    Router::new()
+        .route("/", get(dashboard_handler))
+        .route("/api/status", get(status_handler))
+        .route("/api/captures", get(captures_handler))
+        .route("/api/stream", get(move || stream_handler(frame_rx.clone())))
+        .with_state(state)
+}
+
+#[cfg(feature = "web")]
+async fn dashboard_handler() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
+}
+
+#[cfg(feature = "web")]
+async fn status_handler(State(state): State<SharedWebState>) -> Json<StatusResponse> {
+    let state = state.read().await;
+    let uptime = Utc::now()
+        .signed_duration_since(state.started_at)
+        .num_seconds()
+        .max(0) as u64;
+
+    Json(StatusResponse {
+        detecting: state.detecting,
+        cat_present: state.cat_present,
+        last_detection: state.last_detection,
+        uptime_secs: uptime,
+        detection_count: state.current_detections.len(),
+    })
+}
+
+#[cfg(feature = "web")]
+async fn captures_handler(State(state): State<SharedWebState>) -> Json<Vec<CaptureInfo>> {
+    let state = state.read().await;
+    Json(state.recent_captures.iter().cloned().collect())
+}
+
+#[cfg(feature = "web")]
+async fn stream_handler(frame_rx: FrameReceiver) -> impl IntoResponse {
+    let stream = WatchStream::new(frame_rx).filter_map(|frame: Option<Vec<u8>>| {
+        frame.map(|data: Vec<u8>| {
+            let boundary = "--frame\r\n";
+            let content_type = "Content-Type: image/jpeg\r\n\r\n";
+            let end = "\r\n";
+
+            let mut response_bytes = Vec::new();
+            response_bytes.extend_from_slice(boundary.as_bytes());
+            response_bytes.extend_from_slice(content_type.as_bytes());
+            response_bytes.extend_from_slice(&data);
+            response_bytes.extend_from_slice(end.as_bytes());
+
+            Ok::<_, Infallible>(Bytes::from(response_bytes))
+        })
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/x-mixed-replace; boundary=frame",
+        )
+        .body(Body::from_stream(stream))
+        .unwrap()
+}
+
+#[cfg(feature = "web")]
+pub async fn run_server(
+    config: &WebConfig,
+    state: SharedWebState,
+    frame_rx: FrameReceiver,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let app = create_router(state, frame_rx);
+    let addr = format!("{}:{}", config.bind_address, config.port);
+
+    tracing::info!("Starting web server on http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await?;
+
+    Ok(())
+}
+
+/// Embedded dashboard HTML
+#[cfg(feature = "web")]
+const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat Detector Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
+        }
+        h1 { font-size: 24px; }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #666;
+            transition: background 0.3s;
+        }
+        .status-dot.active { background: #4ade80; box-shadow: 0 0 10px #4ade80; }
+        .status-dot.detecting { animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .main-content {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 900px) {
+            .main-content { grid-template-columns: 1fr; }
+        }
+        .stream-container {
+            background: #16213e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .stream-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .stream-placeholder {
+            aspect-ratio: 4/3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+        }
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h2 {
+            font-size: 14px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 15px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .stat-item {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4ade80;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #888;
+        }
+        .captures-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .capture-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #333;
+        }
+        .capture-item:last-child { border-bottom: none; }
+        .capture-type {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .capture-type.entry { background: #4ade80; color: #000; }
+        .capture-type.exit { background: #f87171; color: #000; }
+        .capture-type.sample { background: #60a5fa; color: #000; }
+        .capture-time {
+            font-size: 12px;
+            color: #888;
+        }
+        .last-detection {
+            font-size: 18px;
+            color: #4ade80;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Cat Detector</h1>
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="stream-container">
+                <img id="stream" src="/api/stream" alt="Live Stream"
+                     onerror="this.style.display='none'; document.getElementById('placeholder').style.display='flex';">
+                <div id="placeholder" class="stream-placeholder" style="display:none;">
+                    <span>Stream unavailable</span>
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="card">
+                    <h2>Status</h2>
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-value" id="uptimeValue">0</div>
+                            <div class="stat-label">Uptime (min)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="detectionsValue">0</div>
+                            <div class="stat-label">Detections</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px;">
+                        <div class="stat-label">Last Detection</div>
+                        <div class="last-detection" id="lastDetection">Never</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Recent Captures</h2>
+                    <div class="captures-list" id="capturesList">
+                        <div style="color: #666; text-align: center; padding: 20px;">
+                            No captures yet
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+
+                if (data.cat_present) {
+                    dot.className = 'status-dot active';
+                    text.textContent = 'Cat Present!';
+                } else if (data.detecting) {
+                    dot.className = 'status-dot detecting';
+                    text.textContent = 'Monitoring...';
+                } else {
+                    dot.className = 'status-dot';
+                    text.textContent = 'Idle';
+                }
+
+                document.getElementById('uptimeValue').textContent =
+                    Math.floor(data.uptime_secs / 60);
+                document.getElementById('detectionsValue').textContent =
+                    data.detection_count;
+
+                if (data.last_detection) {
+                    const date = new Date(data.last_detection);
+                    document.getElementById('lastDetection').textContent =
+                        date.toLocaleTimeString();
+                }
+            } catch (e) {
+                console.error('Failed to fetch status:', e);
+            }
+        }
+
+        async function updateCaptures() {
+            try {
+                const res = await fetch('/api/captures');
+                const captures = await res.json();
+
+                const list = document.getElementById('capturesList');
+                if (captures.length === 0) {
+                    list.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">No captures yet</div>';
+                    return;
+                }
+
+                list.innerHTML = captures.slice(0, 20).map(c => `
+                    <div class="capture-item">
+                        <div>
+                            <span class="capture-type ${c.type}">${c.type}</span>
+                            <span style="margin-left: 8px; font-size: 14px;">${c.filename}</span>
+                        </div>
+                        <span class="capture-time">${new Date(c.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to fetch captures:', e);
+            }
+        }
+
+        // Initial load
+        updateStatus();
+        updateCaptures();
+
+        // Periodic updates
+        setInterval(updateStatus, 1000);
+        setInterval(updateCaptures, 5000);
+    </script>
+</body>
+</html>
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_web_app_state_default() {
+        let state = WebAppState::default();
+        assert!(!state.detecting);
+        assert!(!state.cat_present);
+        assert!(state.last_detection.is_none());
+        assert!(state.recent_captures.is_empty());
+        assert!(state.latest_frame.is_none());
+    }
+
+    #[test]
+    fn test_add_capture_limits_size() {
+        let mut state = WebAppState::new();
+
+        for i in 0..60 {
+            state.add_capture(CaptureInfo {
+                filename: format!("test_{}.jpg", i),
+                timestamp: Utc::now(),
+                capture_type: "entry".to_string(),
+                path: PathBuf::from(format!("/tmp/test_{}.jpg", i)),
+            });
+        }
+
+        assert_eq!(state.recent_captures.len(), MAX_RECENT_CAPTURES);
+    }
+
+    #[test]
+    fn test_capture_info_from_image_type() {
+        let path = PathBuf::from("/captures/cat_entry_20240115_100000.jpg");
+        let timestamp = Utc::now();
+
+        let entry = CaptureInfo::new(path.clone(), timestamp, ImageType::Entry);
+        assert_eq!(entry.capture_type, "entry");
+
+        let exit = CaptureInfo::new(path.clone(), timestamp, ImageType::Exit);
+        assert_eq!(exit.capture_type, "exit");
+
+        let sample = CaptureInfo::new(path, timestamp, ImageType::Sample);
+        assert_eq!(sample.capture_type, "sample");
+    }
+
+    #[test]
+    fn test_draw_bounding_boxes_returns_image() {
+        let image = DynamicImage::new_rgb8(640, 480);
+        let detections = vec![Detection {
+            class_id: 15,
+            confidence: 0.9,
+            bbox: BoundingBox {
+                x: 100.0,
+                y: 100.0,
+                width: 200.0,
+                height: 200.0,
+            },
+        }];
+
+        let result = draw_bounding_boxes(&image, &detections);
+        assert_eq!(result.width(), 640);
+        assert_eq!(result.height(), 480);
+    }
+
+    #[test]
+    fn test_encode_jpeg_produces_valid_data() {
+        let image = DynamicImage::new_rgb8(100, 100);
+        let result = encode_jpeg(&image);
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        // JPEG magic bytes
+        assert!(data.len() > 2);
+        assert_eq!(data[0], 0xFF);
+        assert_eq!(data[1], 0xD8);
+    }
+
+    #[test]
+    fn test_update_frame_stores_jpeg() {
+        let mut state = WebAppState::new();
+        let image = DynamicImage::new_rgb8(100, 100);
+        let detections = vec![];
+
+        state.update_frame(&image, &detections);
+        assert!(state.latest_frame.is_some());
+
+        let frame = state.latest_frame.unwrap();
+        assert_eq!(frame[0], 0xFF);
+        assert_eq!(frame[1], 0xD8);
+    }
+
+    #[test]
+    fn test_status_response_serializes() {
+        let response = StatusResponse {
+            detecting: true,
+            cat_present: false,
+            last_detection: Some(Utc::now()),
+            uptime_secs: 3600,
+            detection_count: 5,
+        };
+
+        let json = serde_json::to_string(&response);
+        assert!(json.is_ok());
+        let json_str = json.unwrap();
+        assert!(json_str.contains("\"detecting\":true"));
+        assert!(json_str.contains("\"cat_present\":false"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_dashboard_html_is_valid() {
+        assert!(DASHBOARD_HTML.contains("<!DOCTYPE html>"));
+        assert!(DASHBOARD_HTML.contains("/api/status"));
+        assert!(DASHBOARD_HTML.contains("/api/captures"));
+        assert!(DASHBOARD_HTML.contains("/api/stream"));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_status_endpoint_returns_json() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = Arc::new(RwLock::new(WebAppState::new()));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(Request::builder().uri("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response.headers().get("content-type").unwrap();
+        assert!(content_type.to_str().unwrap().contains("application/json"));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_captures_endpoint_returns_array() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let state = Arc::new(RwLock::new(WebAppState::new()));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(Request::builder().uri("/api/captures").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.starts_with('['));
+        assert!(body_str.ends_with(']'));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_dashboard_returns_html() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = Arc::new(RwLock::new(WebAppState::new()));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response.headers().get("content-type").unwrap();
+        assert!(content_type.to_str().unwrap().contains("text/html"));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_stream_returns_mjpeg_content_type() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = Arc::new(RwLock::new(WebAppState::new()));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(Request::builder().uri("/api/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response.headers().get("content-type").unwrap();
+        assert!(content_type.to_str().unwrap().contains("multipart/x-mixed-replace"));
+    }
+}

@@ -51,3 +51,13 @@ enter_threshold = 3
 exit_threshold = 5
 # Milliseconds between detection checks
 detection_interval_ms = 500
+
+[web]
+# Enable web dashboard for live monitoring
+enabled = true
+# Address to bind the web server (0.0.0.0 for all interfaces)
+bind_address = "0.0.0.0"
+# Port for the web dashboard
+port = 8080
+# Frames per second for the live stream (1-30, lower = less bandwidth)
+stream_fps = 5

@@ -10,3 +10,4 @@ pub mod notifier;
 pub mod service;
 pub mod storage;
 pub mod tracker;
+pub mod web;

@@ -9,6 +9,7 @@ license = "MIT"
 default = []
 real-camera = ["v4l"]
 nokhwa-camera = ["nokhwa"]
+web = ["axum", "tower-http", "tokio-stream"]
 
 [dependencies]
 # Async runtime
@@ -27,6 +28,14 @@ image = "0.25"
 # Camera capture (optional)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 v4l = { version = "0.14", optional = true }
+
+# Web server (optional)
+axum = { version = "0.7", optional = true }
+tower-http = { version = "0.5", features = ["cors", "fs"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+serde_json = "1"
+bytes = "1"
+http-body-util = "0.1"
 
 # ML inference (ONNX)
 ort = { version = "2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
@@ -53,6 +62,7 @@ async-trait = "0.1"
 mockall = "0.13"
 tempfile = "3"
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 
 [lib]
 name = "cat_detector"
