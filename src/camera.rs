@@ -23,8 +23,11 @@ pub trait CameraCapture: Send + Sync {
 /// Real camera using v4l crate (pure Rust V4L2) - Linux only
 #[cfg(feature = "real-camera")]
 pub struct V4L2Camera {
-    device: std::sync::Mutex<v4l::Device>,
-    stream: std::sync::Mutex<Option<v4l::io::mmap::Stream<'static>>>,
+    // SAFETY: stream borrows from device via raw pointer (see ensure_stream).
+    // Field order matters: Rust drops fields in declaration order,
+    // so stream is dropped before device, keeping the borrow valid.
+    stream: Option<v4l::io::mmap::Stream<'static>>,
+    device: v4l::Device,
     #[allow(dead_code)]
     width: u32,
     #[allow(dead_code)]
@@ -60,34 +63,29 @@ impl V4L2Camera {
         );
 
         Ok(Self {
-            device: std::sync::Mutex::new(device),
-            stream: std::sync::Mutex::new(None),
+            stream: None,
+            device,
             width: fmt.width,
             height: fmt.height,
         })
     }
 
-    fn ensure_stream(&self) -> Result<(), CameraError> {
+    fn ensure_stream(&mut self) -> Result<(), CameraError> {
         use v4l::io::mmap::Stream;
 
-        let mut stream_guard = self.stream.lock().map_err(|e| {
-            CameraError::CaptureError(format!("Failed to lock stream: {}", e))
-        })?;
-
-        if stream_guard.is_none() {
-            let device_guard = self.device.lock().map_err(|e| {
-                CameraError::CaptureError(format!("Failed to lock device: {}", e))
-            })?;
-
-            // Create a stream with memory-mapped buffers
-            // We need to use unsafe to extend the lifetime
-            let device_ptr = &*device_guard as *const v4l::Device;
+        if self.stream.is_none() {
+            // SAFETY: Stream borrows from Device. This is safe because:
+            // 1. Both live in the same struct, so device outlives stream
+            // 2. Field order ensures stream is dropped before device
+            // 3. capture_frame takes &mut self, so no concurrent access
+            // 4. Device is not moved after stream creation (owned by struct)
+            let device_ptr = &self.device as *const v4l::Device;
             let stream = unsafe {
                 Stream::with_buffers(&*device_ptr, v4l::buffer::Type::VideoCapture, 4)
                     .map_err(|e| CameraError::InitError(format!("Failed to create stream: {}", e)))?
             };
 
-            *stream_guard = Some(stream);
+            self.stream = Some(stream);
         }
 
         Ok(())
@@ -103,11 +101,7 @@ impl CameraCapture for V4L2Camera {
         self.ensure_stream()?;
 
         let frame_data = {
-            let mut stream_guard = self.stream.lock().map_err(|e| {
-                CameraError::CaptureError(format!("Failed to lock stream: {}", e))
-            })?;
-
-            let stream = stream_guard.as_mut().ok_or_else(|| {
+            let stream = self.stream.as_mut().ok_or_else(|| {
                 CameraError::CaptureError("Stream not initialized".to_string())
             })?;
 
@@ -127,7 +121,7 @@ impl CameraCapture for V4L2Camera {
     }
 
     fn is_available(&self) -> bool {
-        self.device.lock().is_ok()
+        true
     }
 }
 
