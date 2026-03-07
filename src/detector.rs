@@ -139,12 +139,19 @@ impl OnnxDetector {
             let objectness = row[4];
 
             // Find class with highest score
-            let class_scores = &row.as_slice().unwrap()[5..];
-            let (class_id, &class_score) = class_scores
+            let row_slice = match row.as_slice() {
+                Some(s) => s,
+                None => continue,
+            };
+            let class_scores = &row_slice[5..];
+            let (class_id, &class_score) = match class_scores
                 .iter()
                 .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .unwrap();
+                .max_by(|a, b| a.1.total_cmp(b.1))
+            {
+                Some(result) => result,
+                None => continue,
+            };
 
             // YOLOX confidence = objectness * class_score
             let confidence = objectness * class_score;
@@ -172,13 +179,13 @@ impl OnnxDetector {
     }
 
     fn non_max_suppression(&self, mut detections: Vec<Detection>, iou_threshold: f32) -> Vec<Detection> {
-        detections.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        // Sort ascending so we can pop highest-confidence from the end (O(1))
+        detections.sort_by(|a, b| a.confidence.total_cmp(&b.confidence));
 
         let mut keep = Vec::new();
 
-        while let Some(current) = detections.first().cloned() {
+        while let Some(current) = detections.pop() {
             keep.push(current.clone());
-            detections.remove(0);
 
             detections.retain(|d| {
                 if d.class_id != current.class_id {
