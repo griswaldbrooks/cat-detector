@@ -14,6 +14,9 @@
 /captures/
 config.toml
 
+# Claude Code (user-specific)
+.claude/settings.local.json
+
 # Editor
 .vscode/
 .idea/

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo doc:*)",
+      "Bash(ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo:*)",
+      "Bash(ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(git stash list:*)",
+      "Bash(v4l2-ctl:*)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:crates.io)"
+    ],
+    "deny": []
+  }
+}
