@@ -15,6 +15,7 @@
       "Bash(git branch:*)",
       "Bash(git show:*)",
       "Bash(git stash list:*)",
+      "Bash(bd :*)",
       "Bash(v4l2-ctl:*)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:github.com)",
