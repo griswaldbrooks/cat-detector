@@ -48,6 +48,17 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Logging**: `tracing` crate
 - **Tests**: 62 unit + 9 integration; all traits have Mock* implementations
 
+## Issue Tracking
+
+Uses `bd` (beads) for task tracking. Use `bd` instead of markdown TODOs.
+
+```bash
+bd ready              # Unblocked tasks by priority
+bd show <id>          # Details + dependencies
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
 ## Rules & Agents
 
 - `.claude/rules/` - git workflow, Rust style, testing conventions
