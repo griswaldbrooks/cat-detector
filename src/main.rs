@@ -184,12 +184,15 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     // Initialize detector
+    let model_format =
+        parse_model_format(&config.detector.model_format, &config.detector.model_path);
     let det = Arc::new(
-        detector::OnnxDetector::new_with_size(
+        detector::OnnxDetector::new_with_format(
             &config.detector.model_path,
             config.detector.confidence_threshold,
             config.detector.cat_class_id,
             config.detector.input_size,
+            model_format,
         )
         .context("Failed to initialize detector")?,
     );
@@ -468,13 +471,9 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
 
     // Run detection
     info!("Running detection...");
-    let detector = detector::OnnxDetector::new_with_size(
-        std::path::Path::new("models/yolox_s.onnx"),
-        0.5,
-        15,
-        640,
-    )
-    .context("Failed to initialize detector")?;
+    let capture_model_path = std::path::Path::new("models/yolo11n.onnx");
+    let detector = detector::OnnxDetector::new_with_format(capture_model_path, 0.5, 15, 640, None)
+        .context("Failed to initialize detector")?;
 
     let start = std::time::Instant::now();
     let detections = detector.detect(&frame).await?;
@@ -526,8 +525,9 @@ async fn test_image(
     info!("Loaded image: {}x{}", img.width(), img.height());
 
     // Initialize detector
-    let detector = detector::OnnxDetector::new_with_size(&model_path, threshold, 15, input_size)
-        .context("Failed to initialize detector")?;
+    let detector =
+        detector::OnnxDetector::new_with_format(&model_path, threshold, 15, input_size, None)
+            .context("Failed to initialize detector")?;
     info!("Detector initialized");
 
     // Run detection
@@ -568,6 +568,21 @@ async fn test_image(
     }
 
     Ok(())
+}
+
+fn parse_model_format(
+    format_str: &str,
+    model_path: &std::path::Path,
+) -> Option<detector::ModelFormat> {
+    match format_str {
+        "yolox" => Some(detector::ModelFormat::Yolox),
+        "yolo11" | "yolov8" => Some(detector::ModelFormat::Yolo11),
+        _ => {
+            // "auto" or unknown: let OnnxDetector auto-detect from filename
+            let _ = model_path; // used by OnnxDetector::new_with_format internally
+            None
+        }
+    }
 }
 
 fn coco_class_name(class_id: u32) -> &'static str {

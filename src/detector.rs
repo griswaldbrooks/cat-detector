@@ -16,6 +16,15 @@ pub enum DetectorError {
     PreprocessError(String),
 }
 
+/// Model output format for postprocessing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFormat {
+    /// YOLOX: output [1, num_boxes, 85], grid-decoded, objectness * class_score, 0-255 input
+    Yolox,
+    /// YOLOv8/YOLO11: output [1, 84, 8400], transposed, direct class scores, 0-1 input
+    Yolo11,
+}
+
 #[derive(Debug, Clone)]
 pub struct Detection {
     pub class_id: u32,
@@ -37,13 +46,14 @@ pub trait CatDetector: Send + Sync {
     fn is_cat(&self, detection: &Detection) -> bool;
 }
 
-/// ONNX-based YOLOX detector
+/// ONNX-based object detector supporting YOLOX and YOLOv8/YOLO11 models
 pub struct OnnxDetector {
     session: std::sync::Mutex<Session>,
     confidence_threshold: f32,
     cat_class_id: u32,
     input_width: u32,
     input_height: u32,
+    model_format: ModelFormat,
 }
 
 impl OnnxDetector {
@@ -52,7 +62,6 @@ impl OnnxDetector {
         confidence_threshold: f32,
         cat_class_id: u32,
     ) -> Result<Self, DetectorError> {
-        // Default to 416 for yolox_tiny, can be overridden with new_with_size
         Self::new_with_size(model_path, confidence_threshold, cat_class_id, 416)
     }
 
@@ -62,6 +71,22 @@ impl OnnxDetector {
         cat_class_id: u32,
         input_size: u32,
     ) -> Result<Self, DetectorError> {
+        Self::new_with_format(
+            model_path,
+            confidence_threshold,
+            cat_class_id,
+            input_size,
+            None,
+        )
+    }
+
+    pub fn new_with_format(
+        model_path: &std::path::Path,
+        confidence_threshold: f32,
+        cat_class_id: u32,
+        input_size: u32,
+        format: Option<ModelFormat>,
+    ) -> Result<Self, DetectorError> {
         let session = Session::builder()
             .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?
             .with_intra_threads(4)
@@ -69,12 +94,30 @@ impl OnnxDetector {
             .commit_from_file(model_path)
             .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?;
 
+        // Auto-detect model format from filename if not specified
+        let model_format = format.unwrap_or_else(|| {
+            let path_str = model_path.to_string_lossy().to_lowercase();
+            if path_str.contains("yolox") {
+                ModelFormat::Yolox
+            } else {
+                // Default to YOLO11 format for yolov8/yolo11/unknown models
+                ModelFormat::Yolo11
+            }
+        });
+
+        tracing::info!(
+            "Loaded model {:?} with format {:?}",
+            model_path,
+            model_format
+        );
+
         Ok(Self {
             session: std::sync::Mutex::new(session),
             confidence_threshold,
             cat_class_id,
             input_width: input_size,
             input_height: input_size,
+            model_format,
         })
     }
 
@@ -93,17 +136,21 @@ impl OnnxDetector {
             self.input_width as usize,
         ));
 
-        // YOLOX expects pixel values in 0-255 range (not normalized)
+        let scale = match self.model_format {
+            ModelFormat::Yolox => 1.0,    // YOLOX expects 0-255
+            ModelFormat::Yolo11 => 255.0, // YOLO11 expects 0-1
+        };
+
         for (x, y, pixel) in rgb.enumerate_pixels() {
-            array[[0, 0, y as usize, x as usize]] = pixel[0] as f32;
-            array[[0, 1, y as usize, x as usize]] = pixel[1] as f32;
-            array[[0, 2, y as usize, x as usize]] = pixel[2] as f32;
+            array[[0, 0, y as usize, x as usize]] = pixel[0] as f32 / scale;
+            array[[0, 1, y as usize, x as usize]] = pixel[1] as f32 / scale;
+            array[[0, 2, y as usize, x as usize]] = pixel[2] as f32 / scale;
         }
 
         Ok(array)
     }
 
-    fn postprocess(
+    fn postprocess_yolox(
         &self,
         output: &ArrayView2<f32>,
         original_width: u32,
@@ -111,14 +158,9 @@ impl OnnxDetector {
     ) -> Vec<Detection> {
         let mut detections = Vec::new();
 
-        // YOLOX output format: [num_boxes, 85] where 85 = 4 (bbox) + 1 (objectness) + 80 (classes)
-        // The model outputs grid-relative values that need to be decoded with strides
-        // YOLOX-tiny @ 416: strides are 8, 16, 32 -> grids are 52x52, 26x26, 13x13
-
         let strides = [8, 16, 32];
         let mut grids = Vec::new();
 
-        // Generate grid coordinates for each stride
         for &stride in &strides {
             let grid_size = self.input_width / stride;
             for gy in 0..grid_size {
@@ -135,14 +177,12 @@ impl OnnxDetector {
 
             let (gx, gy, stride) = grids[i];
 
-            // Decode bbox: x/y are offsets from grid cell, w/h need exp()
             let x_center = (row[0] + gx) * stride;
             let y_center = (row[1] + gy) * stride;
             let width = row[2].exp() * stride;
             let height = row[3].exp() * stride;
             let objectness = row[4];
 
-            // Find class with highest score
             let row_slice = match row.as_slice() {
                 Some(s) => s,
                 None => continue,
@@ -157,11 +197,9 @@ impl OnnxDetector {
                 None => continue,
             };
 
-            // YOLOX confidence = objectness * class_score
             let confidence = objectness * class_score;
 
             if confidence >= self.confidence_threshold {
-                // Scale coordinates back to original image size
                 let scale_x = original_width as f32 / self.input_width as f32;
                 let scale_y = original_height as f32 / self.input_height as f32;
 
@@ -178,7 +216,58 @@ impl OnnxDetector {
             }
         }
 
-        // Apply NMS (Non-Maximum Suppression)
+        self.non_max_suppression(detections, 0.45)
+    }
+
+    fn postprocess_yolo11(
+        &self,
+        flat_data: &[f32],
+        output_shape: &[usize],
+        original_width: u32,
+        original_height: u32,
+    ) -> Vec<Detection> {
+        // YOLO11 output: [1, 84, 8400] where 84 = 4 (xywh) + 80 (class scores)
+        // Data is column-major per box: access as flat_data[feature * num_boxes + box_idx]
+        let num_features = output_shape[1]; // 84
+        let num_boxes = output_shape[2]; // 8400
+        let num_classes = num_features - 4;
+
+        let scale_x = original_width as f32 / self.input_width as f32;
+        let scale_y = original_height as f32 / self.input_height as f32;
+
+        let mut detections = Vec::new();
+
+        for box_idx in 0..num_boxes {
+            // Find best class
+            let mut max_score: f32 = 0.0;
+            let mut max_class: usize = 0;
+            for c in 0..num_classes {
+                let score = flat_data[(4 + c) * num_boxes + box_idx];
+                if score > max_score {
+                    max_score = score;
+                    max_class = c;
+                }
+            }
+
+            if max_score >= self.confidence_threshold {
+                let x_center = flat_data[box_idx];
+                let y_center = flat_data[num_boxes + box_idx];
+                let width = flat_data[2 * num_boxes + box_idx];
+                let height = flat_data[3 * num_boxes + box_idx];
+
+                detections.push(Detection {
+                    class_id: max_class as u32,
+                    confidence: max_score,
+                    bbox: BoundingBox {
+                        x: (x_center - width / 2.0) * scale_x,
+                        y: (y_center - height / 2.0) * scale_y,
+                        width: width * scale_x,
+                        height: height * scale_y,
+                    },
+                });
+            }
+        }
+
         self.non_max_suppression(detections, 0.45)
     }
 
@@ -248,23 +337,30 @@ impl CatDetector for OnnxDetector {
             .run(ort::inputs!["images" => input_tensor])
             .map_err(|e| DetectorError::InferenceError(e.to_string()))?;
 
+        // Get the first output (name varies: "output" for YOLOX, "output0" for YOLO11)
         let output_value = outputs
-            .get("output")
-            .ok_or_else(|| DetectorError::InferenceError("Missing output".to_string()))?;
+            .values()
+            .next()
+            .ok_or_else(|| DetectorError::InferenceError("No output tensors".to_string()))?;
 
-        let (_shape, data) = output_value
+        let (shape, data) = output_value
             .try_extract_tensor::<f32>()
             .map_err(|e: ort::Error| DetectorError::InferenceError(e.to_string()))?;
 
-        // Get data from the tensor
         let flat_data: Vec<f32> = data.to_vec();
+        let output_shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
 
-        // YOLOX output is [1, num_boxes, 85], reshape to [num_boxes, 85]
-        let num_boxes = flat_data.len() / 85;
-        let array = ndarray::Array2::from_shape_vec((num_boxes, 85), flat_data)
-            .map_err(|e| DetectorError::InferenceError(e.to_string()))?;
-
-        let detections = self.postprocess(&array.view(), original_width, original_height);
+        let detections = match self.model_format {
+            ModelFormat::Yolox => {
+                let num_boxes = flat_data.len() / 85;
+                let array = ndarray::Array2::from_shape_vec((num_boxes, 85), flat_data)
+                    .map_err(|e| DetectorError::InferenceError(e.to_string()))?;
+                self.postprocess_yolox(&array.view(), original_width, original_height)
+            }
+            ModelFormat::Yolo11 => {
+                self.postprocess_yolo11(&flat_data, &output_shape, original_width, original_height)
+            }
+        };
         Ok(detections)
     }
 

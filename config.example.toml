@@ -11,16 +11,19 @@ frame_height = 480
 fps = 30
 
 [detector]
-# Path to the YOLOX ONNX model file
-# yolox_s.onnx (35MB, 640x640) - better accuracy, ~100ms inference
-# yolox_tiny.onnx (20MB, 416x416) - faster, ~30ms inference
-model_path = "models/yolox_s.onnx"
-# Model input size (640 for yolox_s, 416 for yolox_tiny)
+# Path to the ONNX model file
+# yolo11n.onnx (11MB, 640x640) - fast, ~25ms inference (recommended)
+# yolo11s.onnx (38MB, 640x640) - better accuracy, ~60ms inference
+# yolox_s.onnx (35MB, 640x640) - legacy, ~70ms inference
+model_path = "models/yolo11n.onnx"
+# Model input size (640 for all recommended models)
 input_size = 640
 # Minimum confidence score for detection (0.0 - 1.0)
 confidence_threshold = 0.5
 # COCO class ID for cat (15 is the standard)
 cat_class_id = 15
+# Model format: "auto" (detect from filename), "yolox", "yolo11"
+model_format = "auto"
 
 [storage]
 # Directory where captured images will be saved

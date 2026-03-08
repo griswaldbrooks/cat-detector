@@ -72,10 +72,17 @@ pub struct DetectorConfig {
     pub confidence_threshold: f32,
     #[serde(default = "default_cat_class_id")]
     pub cat_class_id: u32,
+    /// Model format: "auto" (detect from filename), "yolox", or "yolo11"
+    #[serde(default = "default_model_format")]
+    pub model_format: String,
 }
 
 fn default_input_size() -> u32 {
-    640 // YOLOX-s default
+    640
+}
+
+fn default_model_format() -> String {
+    "auto".to_string()
 }
 
 fn default_confidence_threshold() -> f32 {
@@ -89,10 +96,11 @@ fn default_cat_class_id() -> u32 {
 impl Default for DetectorConfig {
     fn default() -> Self {
         Self {
-            model_path: PathBuf::from("models/yolox_s.onnx"),
+            model_path: PathBuf::from("models/yolo11n.onnx"),
             input_size: default_input_size(),
             confidence_threshold: default_confidence_threshold(),
             cat_class_id: default_cat_class_id(),
+            model_format: default_model_format(),
         }
     }
 }

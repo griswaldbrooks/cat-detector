@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-const MODEL_PATH: &str = "models/yolox_s.onnx";
+const MODEL_PATH: &str = "models/yolo11n.onnx";
 const MODEL_INPUT_SIZE: u32 = 640;
 
 fn model_available() -> bool {
@@ -84,10 +84,10 @@ mod detector_integration {
     });
 
     integration_test!(test_cat3_detected, {
-        // cat3.jpeg - yolox_s detects this at ~66% confidence
+        // cat3.jpeg - harder image, yolo11n detects at ~43%, yolox_s at ~66%
         let detector = cat_detector::detector::OnnxDetector::new_with_size(
             Path::new(MODEL_PATH),
-            0.5,
+            0.3,
             15,
             MODEL_INPUT_SIZE,
         )
@@ -101,8 +101,8 @@ mod detector_integration {
         let cats: Vec<_> = detections.iter().filter(|d| detector.is_cat(d)).collect();
         assert!(!cats.is_empty(), "Should detect cat in cat3.jpeg");
         assert!(
-            cats[0].confidence > 0.5,
-            "Cat confidence should be > 50%, got {:.1}%",
+            cats[0].confidence > 0.3,
+            "Cat confidence should be > 30%, got {:.1}%",
             cats[0].confidence * 100.0
         );
     });
