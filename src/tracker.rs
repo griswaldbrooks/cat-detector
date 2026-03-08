@@ -8,9 +8,16 @@ pub enum CatState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackerEvent {
-    CatEntered { timestamp: DateTime<Utc> },
-    CatExited { timestamp: DateTime<Utc>, entry_time: DateTime<Utc> },
-    SampleDue { timestamp: DateTime<Utc> },
+    CatEntered {
+        timestamp: DateTime<Utc>,
+    },
+    CatExited {
+        timestamp: DateTime<Utc>,
+        entry_time: DateTime<Utc>,
+    },
+    SampleDue {
+        timestamp: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug)]
@@ -49,7 +56,11 @@ impl CatTracker {
         self.entry_time
     }
 
-    pub fn process_detection(&mut self, cat_detected: bool, timestamp: DateTime<Utc>) -> Vec<TrackerEvent> {
+    pub fn process_detection(
+        &mut self,
+        cat_detected: bool,
+        timestamp: DateTime<Utc>,
+    ) -> Vec<TrackerEvent> {
         let mut events = Vec::new();
 
         match self.state {
@@ -87,7 +98,10 @@ impl CatTracker {
                         let entry_time = self.entry_time.take().unwrap();
                         self.last_sample_time = None;
                         self.consecutive_detections = 0;
-                        events.push(TrackerEvent::CatExited { timestamp, entry_time });
+                        events.push(TrackerEvent::CatExited {
+                            timestamp,
+                            entry_time,
+                        });
                     }
                 }
             }
@@ -253,7 +267,11 @@ mod tests {
         tracker.process_detection(true, entry_ts);
         let events = tracker.process_detection(false, exit_ts);
 
-        if let TrackerEvent::CatExited { timestamp, entry_time } = &events[0] {
+        if let TrackerEvent::CatExited {
+            timestamp,
+            entry_time,
+        } = &events[0]
+        {
             assert_eq!(*timestamp, exit_ts);
             assert_eq!(*entry_time, entry_ts);
         } else {
@@ -296,10 +314,12 @@ mod tests {
         assert_eq!(tracker.current_state(), CatState::Present);
 
         // Verify we got 2 enter events and 1 exit event
-        let enters: Vec<_> = all_events.iter()
+        let enters: Vec<_> = all_events
+            .iter()
             .filter(|e| matches!(e, TrackerEvent::CatEntered { .. }))
             .collect();
-        let exits: Vec<_> = all_events.iter()
+        let exits: Vec<_> = all_events
+            .iter()
             .filter(|e| matches!(e, TrackerEvent::CatExited { .. }))
             .collect();
 

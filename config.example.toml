@@ -2,8 +2,8 @@
 # Copy this file to config.toml and adjust settings as needed
 
 [camera]
-# Path to the webcam device
-device_path = "/dev/video0"
+# Path to the webcam device ("auto" to detect automatically)
+device_path = "auto"
 # Frame dimensions
 frame_width = 640
 frame_height = 480

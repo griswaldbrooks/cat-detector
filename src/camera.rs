@@ -36,24 +36,64 @@ pub struct V4L2Camera {
 
 #[cfg(feature = "real-camera")]
 impl V4L2Camera {
+    /// Find the first video capture device by scanning /dev/video*.
+    fn detect_camera() -> Result<String, CameraError> {
+        use v4l::video::Capture;
+
+        let mut devices: Vec<_> = std::fs::read_dir("/dev")
+            .map_err(|e| CameraError::InitError(format!("Failed to read /dev: {}", e)))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("video"))
+            })
+            .collect();
+        devices.sort_by_key(|e| e.file_name());
+
+        for entry in devices {
+            let path = entry.path();
+            if let Ok(device) = v4l::Device::with_path(&path) {
+                // Check if this device supports video capture
+                if device.format().is_ok() {
+                    let path_str = path.to_string_lossy().to_string();
+                    tracing::info!("Auto-detected camera: {}", path_str);
+                    return Ok(path_str);
+                }
+            }
+        }
+
+        Err(CameraError::NotAvailable(
+            "No video capture devices found".to_string(),
+        ))
+    }
+
     pub fn new(device_path: &str, width: u32, height: u32, _fps: u32) -> Result<Self, CameraError> {
         use v4l::video::Capture;
 
-        let device = v4l::Device::with_path(device_path)
-            .map_err(|e| CameraError::InitError(format!("Failed to open {}: {}", device_path, e)))?;
+        let device_path = if device_path == "auto" {
+            Self::detect_camera()?
+        } else {
+            device_path.to_string()
+        };
+
+        let device = v4l::Device::with_path(&device_path).map_err(|e| {
+            CameraError::InitError(format!("Failed to open {}: {}", device_path, e))
+        })?;
 
         // Try MJPG format first (most compatible)
-        let mut fmt = device.format().map_err(|e| {
-            CameraError::InitError(format!("Failed to get format: {}", e))
-        })?;
+        let mut fmt = device
+            .format()
+            .map_err(|e| CameraError::InitError(format!("Failed to get format: {}", e)))?;
 
         fmt.width = width;
         fmt.height = height;
         fmt.fourcc = v4l::FourCC::new(b"MJPG");
 
-        let fmt = device.set_format(&fmt).map_err(|e| {
-            CameraError::InitError(format!("Failed to set format: {}", e))
-        })?;
+        let fmt = device
+            .set_format(&fmt)
+            .map_err(|e| CameraError::InitError(format!("Failed to set format: {}", e)))?;
 
         tracing::info!(
             "Camera configured: {}x{} {:?}",
@@ -81,8 +121,9 @@ impl V4L2Camera {
             // 4. Device is not moved after stream creation (owned by struct)
             let device_ptr = &self.device as *const v4l::Device;
             let stream = unsafe {
-                Stream::with_buffers(&*device_ptr, v4l::buffer::Type::VideoCapture, 4)
-                    .map_err(|e| CameraError::InitError(format!("Failed to create stream: {}", e)))?
+                Stream::with_buffers(&*device_ptr, v4l::buffer::Type::VideoCapture, 4).map_err(
+                    |e| CameraError::InitError(format!("Failed to create stream: {}", e)),
+                )?
             };
 
             self.stream = Some(stream);
@@ -101,9 +142,10 @@ impl CameraCapture for V4L2Camera {
         self.ensure_stream()?;
 
         let frame_data = {
-            let stream = self.stream.as_mut().ok_or_else(|| {
-                CameraError::CaptureError("Stream not initialized".to_string())
-            })?;
+            let stream = self
+                .stream
+                .as_mut()
+                .ok_or_else(|| CameraError::CaptureError("Stream not initialized".to_string()))?;
 
             let (buf, _meta) = stream.next().map_err(|e| {
                 CameraError::CaptureError(format!("Failed to capture frame: {}", e))
@@ -113,9 +155,8 @@ impl CameraCapture for V4L2Camera {
         };
 
         // Decode the MJPG frame
-        let img = image::load_from_memory(&frame_data).map_err(|e| {
-            CameraError::CaptureError(format!("Failed to decode frame: {}", e))
-        })?;
+        let img = image::load_from_memory(&frame_data)
+            .map_err(|e| CameraError::CaptureError(format!("Failed to decode frame: {}", e)))?;
 
         Ok(img)
     }
@@ -137,7 +178,8 @@ impl NokhwaCamera {
         use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 
         let index = CameraIndex::String(device_path.to_string());
-        let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
+        let requested =
+            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
 
         let camera = nokhwa::Camera::new(index, requested)
             .map_err(|e| CameraError::InitError(e.to_string()))?;
@@ -150,10 +192,13 @@ impl NokhwaCamera {
 #[async_trait]
 impl CameraCapture for NokhwaCamera {
     async fn capture_frame(&mut self) -> Result<DynamicImage, CameraError> {
-        let frame = self.camera.frame()
+        let frame = self
+            .camera
+            .frame()
             .map_err(|e| CameraError::CaptureError(e.to_string()))?;
 
-        let decoded = frame.decode_image::<nokhwa::pixel_format::RgbFormat>()
+        let decoded = frame
+            .decode_image::<nokhwa::pixel_format::RgbFormat>()
             .map_err(|e| CameraError::CaptureError(e.to_string()))?;
 
         Ok(DynamicImage::ImageRgb8(decoded))
@@ -171,7 +216,12 @@ pub struct StubCamera {
 }
 
 impl StubCamera {
-    pub fn new(_device_path: &str, width: u32, height: u32, _fps: u32) -> Result<Self, CameraError> {
+    pub fn new(
+        _device_path: &str,
+        width: u32,
+        height: u32,
+        _fps: u32,
+    ) -> Result<Self, CameraError> {
         Ok(Self { width, height })
     }
 }
@@ -232,7 +282,9 @@ impl MockCamera {
 impl CameraCapture for MockCamera {
     async fn capture_frame(&mut self) -> Result<DynamicImage, CameraError> {
         if !self.available {
-            return Err(CameraError::NotAvailable("Mock camera unavailable".to_string()));
+            return Err(CameraError::NotAvailable(
+                "Mock camera unavailable".to_string(),
+            ));
         }
 
         if self.frames.is_empty() {
@@ -278,15 +330,15 @@ mod tests {
         let camera = MockCamera::from_solid_colors(vec![[0, 0, 0]], 10, 10);
         assert!(camera.is_available());
 
-        let camera = MockCamera::from_solid_colors(vec![[0, 0, 0]], 10, 10)
-            .with_availability(false);
+        let camera =
+            MockCamera::from_solid_colors(vec![[0, 0, 0]], 10, 10).with_availability(false);
         assert!(!camera.is_available());
     }
 
     #[tokio::test]
     async fn test_mock_camera_unavailable_returns_error() {
-        let mut camera = MockCamera::from_solid_colors(vec![[0, 0, 0]], 10, 10)
-            .with_availability(false);
+        let mut camera =
+            MockCamera::from_solid_colors(vec![[0, 0, 0]], 10, 10).with_availability(false);
 
         let result = camera.capture_frame().await;
         assert!(result.is_err());

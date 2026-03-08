@@ -165,10 +165,7 @@ where
                 entry_time,
             } => {
                 let duration_secs = (*timestamp - *entry_time).num_seconds().max(0) as u64;
-                info!(
-                    "Cat exited at {} (duration: {}s)",
-                    timestamp, duration_secs
-                );
+                info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
 
                 // Save exit image
                 let saved = self

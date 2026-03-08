@@ -129,14 +129,26 @@ pub fn draw_bounding_boxes(image: &DynamicImage, detections: &[Detection]) -> Dy
     let (width, height) = rgb_image.dimensions();
 
     for detection in detections {
-        draw_box(&mut rgb_image, &detection.bbox, width, height, detection.confidence);
+        draw_box(
+            &mut rgb_image,
+            &detection.bbox,
+            width,
+            height,
+            detection.confidence,
+        );
     }
 
     DynamicImage::ImageRgb8(rgb_image)
 }
 
 /// Draw a single bounding box with confidence label
-fn draw_box(image: &mut RgbImage, bbox: &BoundingBox, img_width: u32, img_height: u32, confidence: f32) {
+fn draw_box(
+    image: &mut RgbImage,
+    bbox: &BoundingBox,
+    img_width: u32,
+    img_height: u32,
+    confidence: f32,
+) {
     let color = Rgb([0u8, 255u8, 0u8]); // Green
     let thickness = 2;
 
@@ -188,8 +200,24 @@ fn draw_box(image: &mut RgbImage, bbox: &BoundingBox, img_width: u32, img_height
     let digit1 = conf_percent / 10;
     let digit2 = conf_percent % 10;
 
-    draw_digit(image, digit1, x1 + 4, label_y_start + 5, text_color, img_width, img_height);
-    draw_digit(image, digit2, x1 + 12, label_y_start + 5, text_color, img_width, img_height);
+    draw_digit(
+        image,
+        digit1,
+        x1 + 4,
+        label_y_start + 5,
+        text_color,
+        img_width,
+        img_height,
+    );
+    draw_digit(
+        image,
+        digit2,
+        x1 + 12,
+        label_y_start + 5,
+        text_color,
+        img_width,
+        img_height,
+    );
     // Draw '%' sign approximation
     if x1 + 22 < img_width && label_y_start + 5 < img_height {
         image.put_pixel(x1 + 20, label_y_start + 5, text_color);
@@ -198,19 +226,27 @@ fn draw_box(image: &mut RgbImage, bbox: &BoundingBox, img_width: u32, img_height
 }
 
 /// Draw a simple 3x5 pixel digit
-fn draw_digit(image: &mut RgbImage, digit: u32, x: u32, y: u32, color: Rgb<u8>, max_w: u32, max_h: u32) {
+fn draw_digit(
+    image: &mut RgbImage,
+    digit: u32,
+    x: u32,
+    y: u32,
+    color: Rgb<u8>,
+    max_w: u32,
+    max_h: u32,
+) {
     // Simple 3x5 digit patterns
     let patterns: [[u8; 15]; 10] = [
-        [1,1,1, 1,0,1, 1,0,1, 1,0,1, 1,1,1], // 0
-        [0,1,0, 1,1,0, 0,1,0, 0,1,0, 1,1,1], // 1
-        [1,1,1, 0,0,1, 1,1,1, 1,0,0, 1,1,1], // 2
-        [1,1,1, 0,0,1, 1,1,1, 0,0,1, 1,1,1], // 3
-        [1,0,1, 1,0,1, 1,1,1, 0,0,1, 0,0,1], // 4
-        [1,1,1, 1,0,0, 1,1,1, 0,0,1, 1,1,1], // 5
-        [1,1,1, 1,0,0, 1,1,1, 1,0,1, 1,1,1], // 6
-        [1,1,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1], // 7
-        [1,1,1, 1,0,1, 1,1,1, 1,0,1, 1,1,1], // 8
-        [1,1,1, 1,0,1, 1,1,1, 0,0,1, 1,1,1], // 9
+        [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1], // 0
+        [0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1], // 1
+        [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1], // 2
+        [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 3
+        [1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1], // 4
+        [1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 5
+        [1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1], // 6
+        [1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], // 7
+        [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1], // 8
+        [1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 9
     ];
 
     let pattern = &patterns[digit as usize % 10];
@@ -735,7 +771,12 @@ mod tests {
         let app = create_router(state, rx);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/status").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -757,7 +798,12 @@ mod tests {
         let app = create_router(state, rx);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/captures").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/captures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -802,12 +848,20 @@ mod tests {
         let app = create_router(state, rx);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/stream").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let content_type = response.headers().get("content-type").unwrap();
-        assert!(content_type.to_str().unwrap().contains("multipart/x-mixed-replace"));
+        assert!(content_type
+            .to_str()
+            .unwrap()
+            .contains("multipart/x-mixed-replace"));
     }
 }

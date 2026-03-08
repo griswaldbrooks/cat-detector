@@ -28,8 +28,8 @@ pub struct SystemdService {
 
 impl SystemdService {
     pub fn new(config_path: PathBuf) -> Result<Self, ServiceError> {
-        let binary_path = std::env::current_exe()
-            .map_err(|e| ServiceError::CreateError(e.to_string()))?;
+        let binary_path =
+            std::env::current_exe().map_err(|e| ServiceError::CreateError(e.to_string()))?;
 
         Ok(Self {
             config_path,
@@ -42,6 +42,11 @@ impl SystemdService {
     }
 
     fn generate_service_file(&self) -> String {
+        let working_dir = self
+            .binary_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/"));
+
         format!(
             r#"[Unit]
 Description=Cat Detector - Webcam-based cat detection with notifications
@@ -49,16 +54,19 @@ After=network.target
 
 [Service]
 Type=simple
+WorkingDirectory={working_dir}
 ExecStart={binary} run --config {config}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 Environment=RUST_LOG=info
+Environment=ORT_DYLIB_PATH={working_dir}/onnxruntime/lib/libonnxruntime.so
 
 [Install]
 WantedBy=multi-user.target
 "#,
+            working_dir = working_dir.display(),
             binary = self.binary_path.display(),
             config = self.config_path.display()
         )
@@ -231,6 +239,8 @@ mod tests {
         assert!(content.contains("/etc/cat-detector/config.toml"));
         assert!(content.contains("Type=simple"));
         assert!(content.contains("Restart=on-failure"));
+        assert!(content.contains("WorkingDirectory=/usr/local/bin"));
+        assert!(content.contains("ORT_DYLIB_PATH=/usr/local/bin/onnxruntime/lib/libonnxruntime.so"));
     }
 
     #[test]

@@ -86,8 +86,12 @@ impl OnnxDetector {
         );
         let rgb = resized.to_rgb8();
 
-        let mut array =
-            ndarray::Array4::<f32>::zeros((1, 3, self.input_height as usize, self.input_width as usize));
+        let mut array = ndarray::Array4::<f32>::zeros((
+            1,
+            3,
+            self.input_height as usize,
+            self.input_width as usize,
+        ));
 
         // YOLOX expects pixel values in 0-255 range (not normalized)
         for (x, y, pixel) in rgb.enumerate_pixels() {
@@ -178,7 +182,11 @@ impl OnnxDetector {
         self.non_max_suppression(detections, 0.45)
     }
 
-    fn non_max_suppression(&self, mut detections: Vec<Detection>, iou_threshold: f32) -> Vec<Detection> {
+    fn non_max_suppression(
+        &self,
+        mut detections: Vec<Detection>,
+        iou_threshold: f32,
+    ) -> Vec<Detection> {
         // Sort ascending so we can pop highest-confidence from the end (O(1))
         detections.sort_by(|a, b| a.confidence.total_cmp(&b.confidence));
 

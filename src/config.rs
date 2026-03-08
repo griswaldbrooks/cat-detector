@@ -37,7 +37,7 @@ pub struct CameraConfig {
 }
 
 fn default_device_path() -> String {
-    "/dev/video0".to_string()
+    "auto".to_string()
 }
 
 fn default_frame_width() -> u32 {
@@ -268,8 +268,8 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_valid_config_parses() {
@@ -337,7 +337,7 @@ enabled = false
         let config = Config::load(temp_file.path()).unwrap();
 
         // Check defaults are applied
-        assert_eq!(config.camera.device_path, "/dev/video0");
+        assert_eq!(config.camera.device_path, "auto");
         assert_eq!(config.camera.frame_width, 640);
         assert_eq!(config.camera.frame_height, 480);
         assert_eq!(config.camera.fps, 30);

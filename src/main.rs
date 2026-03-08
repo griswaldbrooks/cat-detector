@@ -143,19 +143,26 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         let web_config = config.web.clone();
         let web_state_clone = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run_server(&web_config, web_state_clone, rx, shutdown_rx_web).await {
+            if let Err(e) = web::run_server(&web_config, web_state_clone, rx, shutdown_rx_web).await
+            {
                 error!("Web server error: {}", e);
             }
         });
 
-        info!("Web dashboard enabled at http://{}:{}", config.web.bind_address, config.web.port);
+        info!(
+            "Web dashboard enabled at http://{}:{}",
+            config.web.bind_address, config.web.port
+        );
         (Some(state), Some(tx))
     } else {
         (None, None)
     };
 
     #[cfg(not(feature = "web"))]
-    let (web_state, frame_tx): (Option<Arc<RwLock<web::WebAppState>>>, Option<web::FrameSender>) = (None, None);
+    let (web_state, frame_tx): (
+        Option<Arc<RwLock<web::WebAppState>>>,
+        Option<web::FrameSender>,
+    ) = (None, None);
 
     // Initialize camera
     #[cfg(feature = "real-camera")]
@@ -177,21 +184,25 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     // Initialize detector
-    let det = Arc::new(detector::OnnxDetector::new_with_size(
-        &config.detector.model_path,
-        config.detector.confidence_threshold,
-        config.detector.cat_class_id,
-        config.detector.input_size,
-    )
-    .context("Failed to initialize detector")?);
+    let det = Arc::new(
+        detector::OnnxDetector::new_with_size(
+            &config.detector.model_path,
+            config.detector.confidence_threshold,
+            config.detector.cat_class_id,
+            config.detector.input_size,
+        )
+        .context("Failed to initialize detector")?,
+    );
 
     // Initialize storage
-    let stor = Arc::new(storage::FileSystemStorage::new(
-        config.storage.output_dir.clone(),
-        config.storage.image_format.clone(),
-        config.storage.jpeg_quality,
-    )
-    .context("Failed to initialize storage")?);
+    let stor = Arc::new(
+        storage::FileSystemStorage::new(
+            config.storage.output_dir.clone(),
+            config.storage.image_format.clone(),
+            config.storage.jpeg_quality,
+        )
+        .context("Failed to initialize storage")?,
+    );
 
     // Initialize notifier
     let notif = Arc::new(if config.notification.enabled {
@@ -232,7 +243,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     info!("Starting cat detection...");
 
     // Frame rate limiting for MJPEG stream
-    let frame_interval = tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
+    let frame_interval =
+        tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
     let mut last_frame_sent = tokio::time::Instant::now() - frame_interval;
 
     // Exponential backoff for error recovery
@@ -258,7 +270,12 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 consecutive_errors += 1;
                 let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
                 let backoff = backoff.min(max_backoff);
-                tracing::warn!("Camera error (retry in {:?}, {} consecutive): {}", backoff, consecutive_errors, e);
+                tracing::warn!(
+                    "Camera error (retry in {:?}, {} consecutive): {}",
+                    backoff,
+                    consecutive_errors,
+                    e
+                );
                 tokio::time::sleep(backoff).await;
                 continue;
             }
@@ -273,7 +290,12 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 consecutive_errors += 1;
                 let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
                 let backoff = backoff.min(max_backoff);
-                tracing::warn!("Detector error (retry in {:?}, {} consecutive): {}", backoff, consecutive_errors, e);
+                tracing::warn!(
+                    "Detector error (retry in {:?}, {} consecutive): {}",
+                    backoff,
+                    consecutive_errors,
+                    e
+                );
                 tokio::time::sleep(backoff).await;
                 continue;
             }
@@ -314,44 +336,68 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         // Handle events
         for event in events {
             use cat_detector::tracker::TrackerEvent;
-            use storage::ImageStorage;
             use notifier::Notifier;
+            use storage::ImageStorage;
 
             match event {
                 TrackerEvent::CatEntered { timestamp } => {
                     info!("Cat entered at {}", timestamp);
 
-                    let saved = stor.save_image(&frame, storage::ImageType::Entry, timestamp).await?;
+                    let saved = stor
+                        .save_image(&frame, storage::ImageType::Entry, timestamp)
+                        .await?;
                     info!("Saved entry image: {:?}", saved.path);
 
                     // Update web captures
                     if let Some(ref state) = web_state {
                         let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Entry));
+                        s.add_capture(web::CaptureInfo::new(
+                            saved.path.clone(),
+                            timestamp,
+                            storage::ImageType::Entry,
+                        ));
                     }
 
                     if notif.is_enabled() {
-                        if let Err(e) = notif.notify(notifier::NotificationEvent::CatEntered { timestamp }).await {
+                        if let Err(e) = notif
+                            .notify(notifier::NotificationEvent::CatEntered { timestamp })
+                            .await
+                        {
                             tracing::warn!("Failed to send entry notification: {}", e);
                         }
                     }
                 }
 
-                TrackerEvent::CatExited { timestamp, entry_time } => {
+                TrackerEvent::CatExited {
+                    timestamp,
+                    entry_time,
+                } => {
                     let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
                     info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
 
-                    let saved = stor.save_image(&frame, storage::ImageType::Exit, timestamp).await?;
+                    let saved = stor
+                        .save_image(&frame, storage::ImageType::Exit, timestamp)
+                        .await?;
                     info!("Saved exit image: {:?}", saved.path);
 
                     // Update web captures
                     if let Some(ref state) = web_state {
                         let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Exit));
+                        s.add_capture(web::CaptureInfo::new(
+                            saved.path.clone(),
+                            timestamp,
+                            storage::ImageType::Exit,
+                        ));
                     }
 
                     if notif.is_enabled() {
-                        if let Err(e) = notif.notify(notifier::NotificationEvent::CatExited { timestamp, duration_secs }).await {
+                        if let Err(e) = notif
+                            .notify(notifier::NotificationEvent::CatExited {
+                                timestamp,
+                                duration_secs,
+                            })
+                            .await
+                        {
                             tracing::warn!("Failed to send exit notification: {}", e);
                         }
                     }
@@ -360,13 +406,19 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 TrackerEvent::SampleDue { timestamp } => {
                     tracing::debug!("Sample due at {}", timestamp);
 
-                    let saved = stor.save_image(&frame, storage::ImageType::Sample, timestamp).await?;
+                    let saved = stor
+                        .save_image(&frame, storage::ImageType::Sample, timestamp)
+                        .await?;
                     tracing::debug!("Saved sample image: {:?}", saved.path);
 
                     // Update web captures
                     if let Some(ref state) = web_state {
                         let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(saved.path.clone(), timestamp, storage::ImageType::Sample));
+                        s.add_capture(web::CaptureInfo::new(
+                            saved.path.clone(),
+                            timestamp,
+                            storage::ImageType::Sample,
+                        ));
                     }
                 }
             }
@@ -396,13 +448,16 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
     info!("Testing camera: {}", device);
 
     // Initialize camera
-    let mut cam = camera::V4L2Camera::new(&device, 640, 480, 30)
-        .context("Failed to initialize camera")?;
+    let mut cam =
+        camera::V4L2Camera::new(&device, 640, 480, 30).context("Failed to initialize camera")?;
     info!("Camera initialized");
 
     // Capture a frame
     info!("Capturing frame...");
-    let frame = cam.capture_frame().await.context("Failed to capture frame")?;
+    let frame = cam
+        .capture_frame()
+        .await
+        .context("Failed to capture frame")?;
     info!("Captured frame: {}x{}", frame.width(), frame.height());
 
     // Save if output path specified
@@ -452,7 +507,12 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32, input_size: u32) -> Result<()> {
+async fn test_image(
+    image_path: PathBuf,
+    model_path: PathBuf,
+    threshold: f32,
+    input_size: u32,
+) -> Result<()> {
     use detector::CatDetector;
 
     info!("Testing detection on {:?}", image_path);
@@ -463,11 +523,7 @@ async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32, in
     // Load the image
     let img = image::open(&image_path)
         .with_context(|| format!("Failed to open image: {:?}", image_path))?;
-    info!(
-        "Loaded image: {}x{}",
-        img.width(),
-        img.height()
-    );
+    info!("Loaded image: {}x{}", img.width(), img.height());
 
     // Initialize detector
     let detector = detector::OnnxDetector::new_with_size(&model_path, threshold, 15, input_size)
@@ -516,16 +572,86 @@ async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32, in
 
 fn coco_class_name(class_id: u32) -> &'static str {
     const COCO_CLASSES: [&str; 80] = [
-        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-        "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
-        "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-        "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
-        "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-        "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-        "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
-        "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-        "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
-        "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+        "traffic light",
+        "fire hydrant",
+        "stop sign",
+        "parking meter",
+        "bench",
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "frisbee",
+        "skis",
+        "snowboard",
+        "sports ball",
+        "kite",
+        "baseball bat",
+        "baseball glove",
+        "skateboard",
+        "surfboard",
+        "tennis racket",
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot dog",
+        "pizza",
+        "donut",
+        "cake",
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "toilet",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "book",
+        "clock",
+        "vase",
+        "scissors",
+        "teddy bear",
+        "hair drier",
+        "toothbrush",
     ];
     COCO_CLASSES.get(class_id as usize).unwrap_or(&"unknown")
 }
@@ -634,7 +760,10 @@ async fn run_web_only(bind: String, port: u16) -> Result<()> {
         }
     });
 
-    info!("Web dashboard available at http://{}:{}", web_config.bind_address, web_config.port);
+    info!(
+        "Web dashboard available at http://{}:{}",
+        web_config.bind_address, web_config.port
+    );
 
     web::run_server(&web_config, state, frame_rx, shutdown_rx)
         .await

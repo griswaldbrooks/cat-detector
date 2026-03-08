@@ -60,7 +60,11 @@ pub struct FileSystemStorage {
 }
 
 impl FileSystemStorage {
-    pub fn new(output_dir: PathBuf, image_format: String, jpeg_quality: u8) -> Result<Self, StorageError> {
+    pub fn new(
+        output_dir: PathBuf,
+        image_format: String,
+        jpeg_quality: u8,
+    ) -> Result<Self, StorageError> {
         std::fs::create_dir_all(&output_dir)
             .map_err(|e| StorageError::DirectoryError(e.to_string()))?;
 
@@ -74,7 +78,10 @@ impl FileSystemStorage {
     fn generate_filename(&self, image_type: &ImageType, timestamp: DateTime<Utc>) -> String {
         let date_str = timestamp.format("%Y%m%d_%H%M%S");
         let millis = timestamp.timestamp_subsec_millis();
-        format!("cat_{}_{}.{:03}.{}", image_type, date_str, millis, self.image_format)
+        format!(
+            "cat_{}_{}.{:03}.{}",
+            image_type, date_str, millis, self.image_format
+        )
     }
 }
 
@@ -97,15 +104,21 @@ impl ImageStorage for FileSystemStorage {
                     &mut file,
                     self.jpeg_quality,
                 );
-                image.to_rgb8().write_with_encoder(encoder)
+                image
+                    .to_rgb8()
+                    .write_with_encoder(encoder)
                     .map_err(|e| StorageError::SaveError(e.to_string()))?;
             }
             "png" => {
-                image.save(&path)
+                image
+                    .save(&path)
                     .map_err(|e| StorageError::SaveError(e.to_string()))?;
             }
             other => {
-                return Err(StorageError::FormatError(format!("Unsupported format: {}", other)));
+                return Err(StorageError::FormatError(format!(
+                    "Unsupported format: {}",
+                    other
+                )));
             }
         }
 
@@ -219,11 +232,16 @@ mod tests {
         let image = DynamicImage::new_rgb8(100, 100);
         let timestamp = Utc::now();
 
-        let result = storage.save_image(&image, ImageType::Entry, timestamp).await;
+        let result = storage
+            .save_image(&image, ImageType::Entry, timestamp)
+            .await;
         assert!(result.is_ok());
         assert_eq!(storage.count(), 1);
 
-        storage.save_image(&image, ImageType::Sample, timestamp).await.unwrap();
+        storage
+            .save_image(&image, ImageType::Sample, timestamp)
+            .await
+            .unwrap();
         assert_eq!(storage.count(), 2);
     }
 
@@ -233,10 +251,22 @@ mod tests {
         let image = DynamicImage::new_rgb8(100, 100);
         let timestamp = Utc::now();
 
-        storage.save_image(&image, ImageType::Entry, timestamp).await.unwrap();
-        storage.save_image(&image, ImageType::Sample, timestamp).await.unwrap();
-        storage.save_image(&image, ImageType::Sample, timestamp).await.unwrap();
-        storage.save_image(&image, ImageType::Exit, timestamp).await.unwrap();
+        storage
+            .save_image(&image, ImageType::Entry, timestamp)
+            .await
+            .unwrap();
+        storage
+            .save_image(&image, ImageType::Sample, timestamp)
+            .await
+            .unwrap();
+        storage
+            .save_image(&image, ImageType::Sample, timestamp)
+            .await
+            .unwrap();
+        storage
+            .save_image(&image, ImageType::Exit, timestamp)
+            .await
+            .unwrap();
 
         assert_eq!(storage.get_images_by_type(ImageType::Entry).len(), 1);
         assert_eq!(storage.get_images_by_type(ImageType::Sample).len(), 2);
@@ -248,7 +278,9 @@ mod tests {
         let storage = MockStorage::new().with_failure();
         let image = DynamicImage::new_rgb8(100, 100);
 
-        let result = storage.save_image(&image, ImageType::Entry, Utc::now()).await;
+        let result = storage
+            .save_image(&image, ImageType::Entry, Utc::now())
+            .await;
         assert!(result.is_err());
     }
 
@@ -282,7 +314,10 @@ mod tests {
         let image = DynamicImage::new_rgb8(100, 100);
         let timestamp = Utc::now();
 
-        let saved = storage.save_image(&image, ImageType::Entry, timestamp).await.unwrap();
+        let saved = storage
+            .save_image(&image, ImageType::Entry, timestamp)
+            .await
+            .unwrap();
 
         assert_eq!(saved.image_type, ImageType::Entry);
         assert_eq!(saved.timestamp, timestamp);

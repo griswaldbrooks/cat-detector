@@ -21,8 +21,13 @@ pub enum NotifierError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotificationEvent {
-    CatEntered { timestamp: DateTime<Utc> },
-    CatExited { timestamp: DateTime<Utc>, duration_secs: u64 },
+    CatEntered {
+        timestamp: DateTime<Utc>,
+    },
+    CatExited {
+        timestamp: DateTime<Utc>,
+        duration_secs: u64,
+    },
 }
 
 impl NotificationEvent {
@@ -34,7 +39,10 @@ impl NotificationEvent {
                     timestamp.format("%Y-%m-%d %H:%M:%S UTC")
                 )
             }
-            NotificationEvent::CatExited { timestamp, duration_secs } => {
+            NotificationEvent::CatExited {
+                timestamp,
+                duration_secs,
+            } => {
                 let duration = format_duration(*duration_secs);
                 format!(
                     "🐱 Cat left at {}. Visit duration: {}",
@@ -82,24 +90,32 @@ pub struct SignalNotifier {
 fn validate_recipient(recipient: &str) -> Result<(), NotifierError> {
     let r = recipient.trim();
     if r.is_empty() {
-        return Err(NotifierError::InvalidRecipient("empty recipient".to_string()));
+        return Err(NotifierError::InvalidRecipient(
+            "empty recipient".to_string(),
+        ));
     }
     if r.starts_with('+') {
         // Phone number: must be digits (and optional dots/dashes) after the +
         let rest = &r[1..];
-        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
-            return Err(NotifierError::InvalidRecipient(
-                format!("invalid phone number: {}", recipient),
-            ));
+        if rest.is_empty()
+            || !rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+        {
+            return Err(NotifierError::InvalidRecipient(format!(
+                "invalid phone number: {}",
+                recipient
+            )));
         }
         return Ok(());
     }
     if r.starts_with("group.") {
         return Ok(());
     }
-    Err(NotifierError::InvalidRecipient(
-        format!("recipient must start with '+' (phone) or 'group.' (group ID): {}", recipient),
-    ))
+    Err(NotifierError::InvalidRecipient(format!(
+        "recipient must start with '+' (phone) or 'group.' (group ID): {}",
+        recipient
+    )))
 }
 
 impl SignalNotifier {
@@ -150,9 +166,10 @@ impl Notifier for SignalNotifier {
         }
 
         if !self.signal_cli_path.exists() {
-            return Err(NotifierError::SignalCliNotFound(
-                format!("signal-cli not found at {:?}", self.signal_cli_path)
-            ));
+            return Err(NotifierError::SignalCliNotFound(format!(
+                "signal-cli not found at {:?}",
+                self.signal_cli_path
+            )));
         }
 
         let message = event.format_message();
@@ -283,13 +300,19 @@ mod tests {
         let notifier = MockNotifier::new();
         let timestamp = Utc::now();
 
-        notifier.notify(NotificationEvent::CatEntered { timestamp }).await.unwrap();
+        notifier
+            .notify(NotificationEvent::CatEntered { timestamp })
+            .await
+            .unwrap();
         assert_eq!(notifier.count(), 1);
 
-        notifier.notify(NotificationEvent::CatExited {
-            timestamp,
-            duration_secs: 120
-        }).await.unwrap();
+        notifier
+            .notify(NotificationEvent::CatExited {
+                timestamp,
+                duration_secs: 120,
+            })
+            .await
+            .unwrap();
         assert_eq!(notifier.count(), 2);
     }
 
@@ -298,12 +321,21 @@ mod tests {
         let notifier = MockNotifier::new();
         let timestamp = Utc::now();
 
-        notifier.notify(NotificationEvent::CatEntered { timestamp }).await.unwrap();
-        notifier.notify(NotificationEvent::CatEntered { timestamp }).await.unwrap();
-        notifier.notify(NotificationEvent::CatExited {
-            timestamp,
-            duration_secs: 60
-        }).await.unwrap();
+        notifier
+            .notify(NotificationEvent::CatEntered { timestamp })
+            .await
+            .unwrap();
+        notifier
+            .notify(NotificationEvent::CatEntered { timestamp })
+            .await
+            .unwrap();
+        notifier
+            .notify(NotificationEvent::CatExited {
+                timestamp,
+                duration_secs: 60,
+            })
+            .await
+            .unwrap();
 
         assert_eq!(notifier.get_enter_notifications().len(), 2);
         assert_eq!(notifier.get_exit_notifications().len(), 1);
@@ -313,9 +345,11 @@ mod tests {
     async fn test_mock_notifier_failure() {
         let notifier = MockNotifier::new().with_failure();
 
-        let result = notifier.notify(NotificationEvent::CatEntered {
-            timestamp: Utc::now()
-        }).await;
+        let result = notifier
+            .notify(NotificationEvent::CatEntered {
+                timestamp: Utc::now(),
+            })
+            .await;
 
         assert!(result.is_err());
     }
@@ -324,9 +358,11 @@ mod tests {
     async fn test_disabled_notifier_returns_error() {
         let notifier = MockNotifier::disabled();
 
-        let result = notifier.notify(NotificationEvent::CatEntered {
-            timestamp: Utc::now()
-        }).await;
+        let result = notifier
+            .notify(NotificationEvent::CatEntered {
+                timestamp: Utc::now(),
+            })
+            .await;
 
         assert!(matches!(result.unwrap_err(), NotifierError::Disabled));
     }
@@ -352,7 +388,7 @@ mod tests {
 
         let event = NotificationEvent::CatExited {
             timestamp,
-            duration_secs: 3725  // 1h 2m 5s
+            duration_secs: 3725, // 1h 2m 5s
         };
         let message = event.format_message();
 
