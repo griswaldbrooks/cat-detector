@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -9,6 +10,10 @@ pub enum NotifierError {
     SendError(String),
     #[error("Signal CLI not found: {0}")]
     SignalCliNotFound(String),
+    #[error("Notification timed out after {0} seconds")]
+    Timeout(u64),
+    #[error("Invalid recipient: {0}")]
+    InvalidRecipient(String),
     #[allow(dead_code)]
     #[error("Notification disabled")]
     Disabled,
@@ -61,12 +66,40 @@ pub trait Notifier: Send + Sync {
     fn is_enabled(&self) -> bool;
 }
 
+const SIGNAL_CLI_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct SignalNotifier {
     signal_cli_path: PathBuf,
     recipient: String,
     enabled: bool,
     notify_on_enter: bool,
     notify_on_exit: bool,
+    timeout: Duration,
+}
+
+/// Validate that a recipient looks like a phone number or signal group ID.
+/// Accepts: +1234567890, +44.7911.123456, group IDs starting with "group."
+fn validate_recipient(recipient: &str) -> Result<(), NotifierError> {
+    let r = recipient.trim();
+    if r.is_empty() {
+        return Err(NotifierError::InvalidRecipient("empty recipient".to_string()));
+    }
+    if r.starts_with('+') {
+        // Phone number: must be digits (and optional dots/dashes) after the +
+        let rest = &r[1..];
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+            return Err(NotifierError::InvalidRecipient(
+                format!("invalid phone number: {}", recipient),
+            ));
+        }
+        return Ok(());
+    }
+    if r.starts_with("group.") {
+        return Ok(());
+    }
+    Err(NotifierError::InvalidRecipient(
+        format!("recipient must start with '+' (phone) or 'group.' (group ID): {}", recipient),
+    ))
 }
 
 impl SignalNotifier {
@@ -75,14 +108,16 @@ impl SignalNotifier {
         recipient: String,
         notify_on_enter: bool,
         notify_on_exit: bool,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, NotifierError> {
+        validate_recipient(&recipient)?;
+        Ok(Self {
             signal_cli_path,
             recipient,
             enabled: true,
             notify_on_enter,
             notify_on_exit,
-        }
+            timeout: SIGNAL_CLI_TIMEOUT,
+        })
     }
 
     pub fn disabled() -> Self {
@@ -92,6 +127,7 @@ impl SignalNotifier {
             enabled: false,
             notify_on_enter: false,
             notify_on_exit: false,
+            timeout: SIGNAL_CLI_TIMEOUT,
         }
     }
 
@@ -121,10 +157,13 @@ impl Notifier for SignalNotifier {
 
         let message = event.format_message();
 
-        let output = tokio::process::Command::new(&self.signal_cli_path)
+        let cmd = tokio::process::Command::new(&self.signal_cli_path)
             .args(["send", "-m", &message, &self.recipient])
-            .output()
+            .output();
+
+        let output = tokio::time::timeout(self.timeout, cmd)
             .await
+            .map_err(|_| NotifierError::Timeout(self.timeout.as_secs()))?
             .map_err(|e| NotifierError::SendError(e.to_string()))?;
 
         if !output.status.success() {
@@ -336,7 +375,8 @@ mod tests {
             "+1234567890".to_string(),
             true,
             false,
-        );
+        )
+        .unwrap();
 
         assert!(notifier.should_notify(&NotificationEvent::CatEntered {
             timestamp: Utc::now()
@@ -351,5 +391,37 @@ mod tests {
     fn test_disabled_signal_notifier() {
         let notifier = SignalNotifier::disabled();
         assert!(!notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_validate_recipient_valid_phone() {
+        assert!(validate_recipient("+1234567890").is_ok());
+        assert!(validate_recipient("+44.7911.123456").is_ok());
+        assert!(validate_recipient("+1-555-123-4567").is_ok());
+    }
+
+    #[test]
+    fn test_validate_recipient_valid_group() {
+        assert!(validate_recipient("group.abc123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_recipient_rejects_invalid() {
+        assert!(validate_recipient("").is_err());
+        assert!(validate_recipient("1234567890").is_err());
+        assert!(validate_recipient("not-a-number").is_err());
+        assert!(validate_recipient("+").is_err());
+        assert!(validate_recipient("+abc").is_err());
+    }
+
+    #[test]
+    fn test_signal_notifier_new_rejects_invalid_recipient() {
+        let result = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "not-valid".to_string(),
+            true,
+            true,
+        );
+        assert!(matches!(result, Err(NotifierError::InvalidRecipient(_))));
     }
 }

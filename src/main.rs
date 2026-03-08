@@ -211,7 +211,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             recipient,
             config.notification.notify_on_enter,
             config.notification.notify_on_exit,
-        )
+        )?
     } else {
         notifier::SignalNotifier::disabled()
     });
