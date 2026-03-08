@@ -1,6 +1,6 @@
 # Cat Detector
 
-Rust application that monitors a USB webcam for cats using YOLO11n (ONNX). Saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream and session browsing.
+Rust application that monitors a USB webcam for cats using CLIP ViT-B/32 zero-shot classification (ONNX). Saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream and session browsing.
 
 ## Quick Commands
 
@@ -49,8 +49,18 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records with wallclock timestamps for real-time playback
-- **Tests**: 77 unit + 9 integration; all traits have Mock* implementations
+- **Tests**: 89 unit + 9 integration; all traits have Mock* implementations
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
+- **Python scripts**: managed via [pixi](https://pixi.sh) (`pixi run test-clip`, `pixi run -e clip generate-embeddings`)
+
+## Python Scripts
+
+Managed via pixi (deps in `pyproject.toml`, lock in `pixi.lock`):
+
+```bash
+pixi run test-clip                    # Test CLIP detection pipeline on test images
+pixi run -e clip generate-embeddings  # Regenerate text embeddings (needs torch + clip)
+```
 
 ## Issue Tracking
 

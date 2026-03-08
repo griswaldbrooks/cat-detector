@@ -6,6 +6,8 @@ same space as the ONNX image encoder (clip_vitb32_image.onnx).
 
 Output format: [count: u32 LE][dim: u32 LE][embed_0: f32 x dim]...[embed_N: f32 x dim]
 First embedding is the positive class (cat), rest are negatives.
+
+Usage: pixi run -e clip generate-embeddings
 """
 
 import struct

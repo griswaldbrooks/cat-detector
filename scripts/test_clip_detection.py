@@ -3,6 +3,8 @@
 
 Loads the binary embeddings file and CLIP image encoder to replicate
 the Rust detection pipeline exactly.
+
+Usage: pixi run test-clip
 """
 
 import struct
