@@ -6,6 +6,7 @@ tools:
 skills:
   - build
   - test
+  - tdd
 ---
 
 # Test Runner Agent

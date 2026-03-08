@@ -3,6 +3,7 @@ model: sonnet
 skills:
   - build
   - test
+  - tdd
 ---
 
 # Coder Agent
