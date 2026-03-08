@@ -18,6 +18,7 @@
       "Bash(bd *)",
       "Bash(v4l2-ctl:*)",
       "Bash(ssh catbox *)",
+      "Bash(curl *catbox.local*)",
       "Bash(./scripts/*)",
       "Bash(rsync *)",
       "WebFetch(domain:docs.rs)",

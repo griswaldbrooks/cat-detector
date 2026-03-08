@@ -29,13 +29,13 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `main.rs` | CLI (clap), daemon loop, web server launch |
 | `app.rs` | Generic `App<C,D,S,N>` orchestrating the detection loop |
 | `config.rs` | TOML config parsing with defaults and validation |
-| `camera.rs` | `CameraCapture` trait + V4L2Camera / StubCamera |
+| `camera.rs` | `CameraCapture` trait + V4L2Camera (auto-detect) / StubCamera |
 | `detector.rs` | `CatDetector` trait + OnnxDetector (YOLOX-S, ort crate v2) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
 | `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli) |
 | `service.rs` | Systemd service install/uninstall |
-| `web.rs` | Axum web dashboard, MJPEG stream, status/captures API |
+| `web.rs` | Axum web dashboard, MJPEG stream, status/captures/frame API |
 | `lib.rs` | Library exports |
 
 ## Key Details
@@ -46,7 +46,8 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate
-- **Tests**: 62 unit + 9 integration; all traits have Mock* implementations
+- **Tests**: 61 unit + 9 integration; all traits have Mock* implementations
+- **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 
 ## Issue Tracking
 
@@ -63,4 +64,4 @@ bd close <id>         # Complete work
 
 - `.claude/rules/` - git workflow, Rust style, testing conventions
 - `.claude/agents/` - coder, code-reviewer, test-runner
-- `.claude/skills/` - build, test, review
+- `.claude/skills/` - build, test, review, deploy, capture, wrapup
