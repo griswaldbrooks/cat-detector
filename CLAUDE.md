@@ -1,6 +1,6 @@
 # Cat Detector
 
-Rust application that monitors a USB webcam for cats using YOLOX-S (ONNX). Saves images on cat entry/exit, sends Signal notifications, and serves a web dashboard with live MJPEG stream.
+Rust application that monitors a USB webcam for cats using YOLO11n (ONNX). Saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream and session browsing.
 
 ## Quick Commands
 
@@ -22,31 +22,34 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 
 ## Architecture
 
-11 modules with trait-based dependency injection:
+13 modules with trait-based dependency injection:
 
 | Module | Purpose |
 |---|---|
-| `main.rs` | CLI (clap), daemon loop, web server launch |
+| `main.rs` | CLI (clap), daemon loop (30fps capture, periodic detection), web server launch |
 | `app.rs` | Generic `App<C,D,S,N>` orchestrating the detection loop |
 | `config.rs` | TOML config parsing with defaults and validation |
 | `camera.rs` | `CameraCapture` trait + V4L2Camera (auto-detect) / StubCamera |
-| `detector.rs` | `CatDetector` trait + OnnxDetector (YOLOX-S, ort crate v2) |
+| `detector.rs` | `CatDetector` trait + OnnxDetector (YOLO11/YOLOX, ort crate v2) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
 | `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli) |
+| `recorder.rs` | `VideoRecorder` trait + FfmpegRecorder (pipes raw frames to ffmpeg) |
+| `session.rs` | `CatSession` model + `SessionManager` (JSON persistence) |
 | `service.rs` | Systemd service install/uninstall |
-| `web.rs` | Axum web dashboard, MJPEG stream, status/captures/frame API |
+| `web.rs` | Axum dashboard, MJPEG stream, session list/detail pages, capture serving |
 | `lib.rs` | Library exports |
 
 ## Key Details
 
-- **Model**: YOLOX-S, 640x640 input, cat = COCO class 15
+- **Model**: YOLO11n (default), 640x640 input, cat = COCO class 15. Also supports YOLOX via `ModelFormat` auto-detection from filename
 - **ONNX Runtime**: loaded dynamically via `ORT_DYLIB_PATH` env var
 - **Cargo features**: `real-camera` (v4l2), `web` (axum), `nokhwa-camera` (unused)
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate
-- **Tests**: 61 unit + 9 integration; all traits have Mock* implementations
+- **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records at camera fps during cat presence
+- **Tests**: 75 unit + 9 integration; all traits have Mock* implementations
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 
 ## Issue Tracking
