@@ -637,10 +637,13 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     <div class="container">
         <header>
             <h1>Cat Detector</h1>
-            <div class="status-indicator">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Connecting...</span>
-            </div>
+            <nav style="display:flex;align-items:center;gap:20px;">
+                <a href="/sessions" style="color:#60a5fa;text-decoration:none;font-size:14px;">Sessions</a>
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Connecting...</span>
+                </div>
+            </nav>
         </header>
 
         <div class="main-content">
