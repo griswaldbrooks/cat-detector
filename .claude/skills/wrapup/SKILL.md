@@ -1,10 +1,10 @@
 ---
-name: sync
-description: Sync project state — update beads issues, documentation, and memory. Use at end of session, after completing work, or when user says "sync", "wrap up", or "land the plane".
+name: wrapup
+description: Wrap up session — update beads issues, documentation, and memory. Use at end of session, after completing work, or when user says "wrap up", "wrapup", or "land the plane".
 user_invocable: true
 ---
 
-# Sync
+# Wrap Up
 
 Update all project state to reflect current reality. Context-dependent — assess what actually changed and update accordingly.
 
