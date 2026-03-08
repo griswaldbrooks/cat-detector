@@ -10,6 +10,47 @@ use thiserror::Error;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
+/// Tracks detection diagnostics for periodic heartbeat logging.
+pub struct DiagnosticStats {
+    pub frames_captured: u64,
+    pub detections_run: u64,
+    pub max_confidence: f32,
+    pub detection_errors: u64,
+}
+
+impl DiagnosticStats {
+    pub fn new() -> Self {
+        Self {
+            frames_captured: 0,
+            detections_run: 0,
+            max_confidence: 0.0,
+            detection_errors: 0,
+        }
+    }
+
+    pub fn record_frame(&mut self) {
+        self.frames_captured += 1;
+    }
+
+    pub fn record_detection(&mut self, max_confidence: f32) {
+        self.detections_run += 1;
+        if max_confidence > self.max_confidence {
+            self.max_confidence = max_confidence;
+        }
+    }
+
+    pub fn record_error(&mut self) {
+        self.detection_errors += 1;
+    }
+
+    pub fn reset(&mut self) {
+        self.frames_captured = 0;
+        self.detections_run = 0;
+        self.max_confidence = 0.0;
+        self.detection_errors = 0;
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Camera error: {0}")]
@@ -40,6 +81,9 @@ where
     detection_interval_ms: u64,
     frame_interval_ms: u64,
     last_detection_time: Option<tokio::time::Instant>,
+    pub diagnostics: DiagnosticStats,
+    diagnostic_interval_ms: u64,
+    last_diagnostic_time: Option<tokio::time::Instant>,
 }
 
 impl<C, D, S, N> App<C, D, S, N>
@@ -82,6 +126,9 @@ where
             detection_interval_ms: tracking_config.detection_interval_ms,
             frame_interval_ms: 1000 / camera_fps.max(1) as u64,
             last_detection_time: None,
+            diagnostics: DiagnosticStats::new(),
+            diagnostic_interval_ms: 5 * 60 * 1000, // 5 minutes
+            last_diagnostic_time: None,
         }
     }
 
@@ -149,24 +196,63 @@ where
         // Capture frame every cycle
         let frame = self.camera.capture_frame().await?;
         let timestamp = Utc::now();
+        self.diagnostics.record_frame();
 
         // Only run detection when interval has elapsed
         if self.detection_due() {
-            let detections = self.detector.detect(&frame).await?;
-            let cat_detected = detections.iter().any(|d| self.detector.is_cat(d));
+            match self.detector.detect(&frame).await {
+                Ok(detections) => {
+                    let max_conf = detections
+                        .iter()
+                        .map(|d| d.confidence)
+                        .fold(0.0f32, f32::max);
+                    self.diagnostics.record_detection(max_conf);
 
-            debug!("Detection result: cat_detected={}", cat_detected);
+                    let cat_detected = detections.iter().any(|d| self.detector.is_cat(d));
+                    debug!("Detection result: cat_detected={}", cat_detected);
 
-            // Process through tracker
-            let events = self.tracker.process_detection(cat_detected, timestamp);
+                    // Process through tracker
+                    let events = self.tracker.process_detection(cat_detected, timestamp);
 
-            // Handle events
-            for event in events {
-                self.handle_event(&event, &frame).await?;
+                    // Handle events
+                    for event in events {
+                        self.handle_event(&event, &frame).await?;
+                    }
+                }
+                Err(e) => {
+                    self.diagnostics.record_error();
+                    return Err(e.into());
+                }
             }
         }
 
+        // Periodic diagnostic logging
+        self.maybe_log_diagnostics();
+
         Ok(Some(frame))
+    }
+
+    fn maybe_log_diagnostics(&mut self) {
+        let now = tokio::time::Instant::now();
+        let should_log = match self.last_diagnostic_time {
+            None => {
+                self.last_diagnostic_time = Some(now);
+                false
+            }
+            Some(last) => {
+                now.duration_since(last).as_millis() as u64 >= self.diagnostic_interval_ms
+            }
+        };
+
+        if should_log {
+            self.last_diagnostic_time = Some(now);
+            let s = &self.diagnostics;
+            info!(
+                "Detection heartbeat: {} frames, {} detections, max_cat_conf={:.3}, errors={}",
+                s.frames_captured, s.detections_run, s.max_confidence, s.detection_errors
+            );
+            self.diagnostics.reset();
+        }
     }
 
     async fn handle_event(
@@ -255,6 +341,75 @@ mod tests {
     use image::DynamicImage;
     use std::sync::Arc;
 
+    #[test]
+    fn test_diagnostic_stats_accumulate_frames_and_detections() {
+        let mut stats = DiagnosticStats::new();
+        stats.record_frame();
+        stats.record_frame();
+        stats.record_frame();
+        stats.record_detection(0.75);
+        stats.record_detection(0.42);
+
+        assert_eq!(stats.frames_captured, 3);
+        assert_eq!(stats.detections_run, 2);
+        assert!((stats.max_confidence - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_diagnostic_stats_reset() {
+        let mut stats = DiagnosticStats::new();
+        stats.record_frame();
+        stats.record_detection(0.9);
+        stats.record_error();
+        stats.reset();
+
+        assert_eq!(stats.frames_captured, 0);
+        assert_eq!(stats.detections_run, 0);
+        assert!((stats.max_confidence - 0.0).abs() < f32::EPSILON);
+        assert_eq!(stats.detection_errors, 0);
+    }
+
+    #[tokio::test]
+    async fn test_process_cycle_tracks_diagnostics() {
+        let (mut app, _storage, _notifier) = create_test_app(vec![false, false]);
+
+        // Process two cycles with detection interval wait
+        app.process_cycle().await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(110)).await;
+        app.process_cycle().await.unwrap();
+
+        assert_eq!(app.diagnostics.frames_captured, 2);
+        assert_eq!(app.diagnostics.detections_run, 2);
+    }
+
+    #[tokio::test]
+    async fn test_process_cycle_counts_detection_errors() {
+        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
+        let detector = MockDetector::failing();
+        let storage = Arc::new(MockStorage::new());
+        let notifier = Arc::new(MockNotifier::new());
+
+        let mut app = App {
+            camera,
+            detector: Arc::new(detector),
+            storage: storage.clone(),
+            notifier: notifier.clone(),
+            tracker: CatTracker::new(2, 2, 10),
+            detection_interval_ms: 100,
+            frame_interval_ms: 100,
+            last_detection_time: None,
+            diagnostics: DiagnosticStats::new(),
+            diagnostic_interval_ms: 5 * 60 * 1000,
+            last_diagnostic_time: None,
+        };
+
+        // process_cycle should return error but diagnostics should track it
+        let result = app.process_cycle().await;
+        assert!(result.is_err());
+        assert_eq!(app.diagnostics.detection_errors, 1);
+        assert_eq!(app.diagnostics.frames_captured, 1);
+    }
+
     fn create_test_app(
         detector_sequence: Vec<bool>,
     ) -> (
@@ -289,6 +444,9 @@ mod tests {
             detection_interval_ms: 100,
             frame_interval_ms: 100,
             last_detection_time: None,
+            diagnostics: DiagnosticStats::new(),
+            diagnostic_interval_ms: 5 * 60 * 1000,
+            last_diagnostic_time: None,
         };
 
         (app, storage, notifier)
@@ -376,6 +534,9 @@ mod tests {
             detection_interval_ms: 100,
             frame_interval_ms: 100,
             last_detection_time: None,
+            diagnostics: DiagnosticStats::new(),
+            diagnostic_interval_ms: 5 * 60 * 1000,
+            last_diagnostic_time: None,
         };
 
         // Process two cycles with detection interval waits
@@ -408,6 +569,9 @@ mod tests {
             detection_interval_ms: 500,
             frame_interval_ms: 33,
             last_detection_time: None,
+            diagnostics: DiagnosticStats::new(),
+            diagnostic_interval_ms: 5 * 60 * 1000,
+            last_diagnostic_time: None,
         };
 
         // Call process_cycle 5 times rapidly (no sleep between)

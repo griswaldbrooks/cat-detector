@@ -604,6 +604,7 @@ pub struct MockDetector {
     call_count: std::sync::atomic::AtomicUsize,
     cat_class_id: u32,
     confidence_threshold: f32,
+    should_fail: bool,
 }
 
 #[cfg(test)]
@@ -614,6 +615,7 @@ impl MockDetector {
             call_count: std::sync::atomic::AtomicUsize::new(0),
             cat_class_id: 15,
             confidence_threshold: 0.5,
+            should_fail: false,
         }
     }
 
@@ -657,6 +659,16 @@ impl MockDetector {
         Self::new(results)
     }
 
+    pub fn failing() -> Self {
+        Self {
+            results: std::sync::Mutex::new(vec![]),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            cat_class_id: 15,
+            confidence_threshold: 0.5,
+            should_fail: true,
+        }
+    }
+
     pub fn call_count(&self) -> usize {
         self.call_count.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -669,6 +681,11 @@ impl CatDetector for MockDetector {
         let count = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        if self.should_fail {
+            return Err(DetectorError::InferenceError("mock failure".to_string()));
+        }
+
         let results = self.results.lock().unwrap();
 
         if results.is_empty() {
