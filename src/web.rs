@@ -5,7 +5,7 @@
 #[cfg(feature = "web")]
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{header, Response, StatusCode},
     response::{Html, IntoResponse},
     routing::get,
@@ -30,6 +30,8 @@ use tokio::sync::{watch, RwLock};
 
 use crate::config::WebConfig;
 use crate::detector::{BoundingBox, Detection};
+#[cfg(feature = "web")]
+use crate::session::SessionManager;
 use crate::storage::ImageType;
 
 /// Maximum number of recent captures to keep in memory
@@ -52,6 +54,10 @@ pub struct WebAppState {
     pub latest_frame: Option<Vec<u8>>,
     /// Latest detections for the current frame
     pub current_detections: Vec<Detection>,
+    /// Directory where sessions are stored
+    pub sessions_dir: PathBuf,
+    /// Directory where captures (images/videos) are stored
+    pub captures_dir: PathBuf,
 }
 
 impl Default for WebAppState {
@@ -64,6 +70,8 @@ impl Default for WebAppState {
             recent_captures: VecDeque::new(),
             latest_frame: None,
             current_detections: Vec::new(),
+            sessions_dir: PathBuf::from("captures/sessions"),
+            captures_dir: PathBuf::from("captures"),
         }
     }
 }
@@ -71,6 +79,15 @@ impl Default for WebAppState {
 impl WebAppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create with explicit sessions and captures directories
+    pub fn with_dirs(sessions_dir: PathBuf, captures_dir: PathBuf) -> Self {
+        Self {
+            sessions_dir,
+            captures_dir,
+            ..Self::default()
+        }
     }
 
     /// Add a capture to the recent captures list
@@ -299,9 +316,14 @@ pub fn create_frame_channel() -> (FrameSender, FrameReceiver) {
 pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
     Router::new()
         .route("/", get(dashboard_handler))
+        .route("/sessions", get(sessions_list_handler))
+        .route("/sessions/{id}", get(session_detail_handler))
         .route("/api/status", get(status_handler))
         .route("/api/captures", get(captures_handler))
+        .route("/api/sessions", get(sessions_api_handler))
+        .route("/api/sessions/{id}", get(session_detail_api_handler))
         .route("/api/frame", get(frame_handler))
+        .route("/captures/{filename}", get(serve_capture_file))
         .route("/api/stream", get(move || stream_handler(frame_rx.clone())))
         .with_state(state)
 }
@@ -375,6 +397,80 @@ async fn stream_handler(frame_rx: FrameReceiver) -> impl IntoResponse {
         )
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+#[cfg(feature = "web")]
+async fn sessions_api_handler(State(state): State<SharedWebState>) -> impl IntoResponse {
+    let state = state.read().await;
+    let mgr = SessionManager::new(state.sessions_dir.clone());
+    match mgr.load_sessions() {
+        Ok(sessions) => Json(sessions).into_response(),
+        Err(e) => {
+            tracing::warn!("Failed to load sessions: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load sessions").into_response()
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+async fn session_detail_api_handler(
+    State(state): State<SharedWebState>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let state = state.read().await;
+    let mgr = SessionManager::new(state.sessions_dir.clone());
+    match mgr.load_session(&id) {
+        Ok(Some(session)) => Json(session).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Err(e) => {
+            tracing::warn!("Failed to load session {}: {}", id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load session").into_response()
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+async fn sessions_list_handler() -> Html<&'static str> {
+    Html(SESSIONS_LIST_HTML)
+}
+
+#[cfg(feature = "web")]
+async fn session_detail_handler() -> Html<&'static str> {
+    Html(SESSION_DETAIL_HTML)
+}
+
+#[cfg(feature = "web")]
+async fn serve_capture_file(
+    State(state): State<SharedWebState>,
+    AxumPath(filename): AxumPath<String>,
+) -> impl IntoResponse {
+    // Security: reject path traversal
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+    }
+
+    let state = state.read().await;
+    let file_path = state.captures_dir.join(&filename);
+
+    match tokio::fs::read(&file_path).await {
+        Ok(data) => {
+            let content_type = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "mp4" => "video/mp4",
+                "webm" => "video/webm",
+                "avi" => "video/x-msvideo",
+                _ => "application/octet-stream",
+            };
+
+            Response::builder()
+                .header(header::CONTENT_TYPE, content_type)
+                .body(Body::from(data))
+                .unwrap()
+                .into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    }
 }
 
 #[cfg(feature = "web")]
@@ -654,6 +750,429 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         // Periodic updates
         setInterval(updateStatus, 1000);
         setInterval(updateCaptures, 5000);
+    </script>
+</body>
+</html>
+"#;
+
+/// Sessions list HTML page
+#[cfg(feature = "web")]
+const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat Sessions</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        h1 { font-size: 24px; }
+        a { color: #60a5fa; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .sessions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .session-card {
+            background: #16213e;
+            border-radius: 12px;
+            overflow: hidden;
+            transition: transform 0.15s;
+            cursor: pointer;
+        }
+        .session-card:hover { transform: translateY(-2px); }
+        .session-card a { color: inherit; text-decoration: none; display: block; }
+        .session-thumb {
+            width: 100%;
+            aspect-ratio: 4/3;
+            object-fit: cover;
+            background: #0f3460;
+            display: block;
+        }
+        .session-thumb-placeholder {
+            width: 100%;
+            aspect-ratio: 4/3;
+            background: #0f3460;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-size: 14px;
+        }
+        .session-info {
+            padding: 16px;
+        }
+        .session-time {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .session-meta {
+            font-size: 13px;
+            color: #888;
+            display: flex;
+            gap: 16px;
+        }
+        .session-active {
+            display: inline-block;
+            background: #4ade80;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state p { font-size: 18px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Cat Sessions</h1>
+            <a href="/">Dashboard</a>
+        </header>
+        <div id="sessionsList" class="sessions-grid"></div>
+    </div>
+    <script>
+        function formatDuration(secs) {
+            if (secs == null) return 'Active';
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            const s = secs % 60;
+            if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+            if (m > 0) return m + 'm ' + s + 's';
+            return s + 's';
+        }
+
+        function thumbUrl(session) {
+            if (session.entry_image) {
+                var parts = session.entry_image.replace(/\\/g, '/').split('/');
+                return '/captures/' + parts[parts.length - 1];
+            }
+            return null;
+        }
+
+        async function loadSessions() {
+            try {
+                const res = await fetch('/api/sessions');
+                const sessions = await res.json();
+                const container = document.getElementById('sessionsList');
+
+                if (sessions.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><p>No cat sessions recorded yet</p></div>';
+                    return;
+                }
+
+                container.innerHTML = sessions.map(function(s) {
+                    var thumb = thumbUrl(s);
+                    var thumbHtml = thumb
+                        ? '<img class="session-thumb" src="' + thumb + '" alt="Entry" loading="lazy">'
+                        : '<div class="session-thumb-placeholder">No image</div>';
+                    var duration = s.exit_time ? formatDuration(Math.round((new Date(s.exit_time) - new Date(s.entry_time)) / 1000)) : null;
+                    var activeTag = s.exit_time ? '' : '<span class="session-active">ACTIVE</span>';
+                    var durationText = duration ? duration : 'In progress';
+                    var images = (s.sample_images ? s.sample_images.length : 0);
+                    var entryDate = new Date(s.entry_time);
+                    return '<div class="session-card"><a href="/sessions/' + s.id + '">'
+                        + thumbHtml
+                        + '<div class="session-info">'
+                        + '<div class="session-time">' + entryDate.toLocaleString() + activeTag + '</div>'
+                        + '<div class="session-meta"><span>Duration: ' + durationText + '</span><span>Images: ' + images + '</span></div>'
+                        + '</div></a></div>';
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load sessions:', e);
+                document.getElementById('sessionsList').innerHTML =
+                    '<div class="empty-state"><p>Failed to load sessions</p></div>';
+            }
+        }
+
+        loadSessions();
+    </script>
+</body>
+</html>
+"#;
+
+/// Session detail HTML page
+#[cfg(feature = "web")]
+const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Detail</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; margin-bottom: 12px; color: #ccc; }
+        a { color: #60a5fa; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .nav-links { display: flex; gap: 16px; }
+        .info-card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+        }
+        .info-item label {
+            display: block;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 4px;
+        }
+        .info-item .value {
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .active-badge {
+            display: inline-block;
+            background: #4ade80;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .images-section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .key-images {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        @media (max-width: 600px) {
+            .key-images { grid-template-columns: 1fr; }
+        }
+        .key-image-container {
+            text-align: center;
+        }
+        .key-image-container .label {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+        .key-image-container img {
+            width: 100%;
+            border-radius: 8px;
+            display: block;
+        }
+        .key-image-container .no-image {
+            width: 100%;
+            aspect-ratio: 4/3;
+            background: #0f3460;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-size: 14px;
+        }
+        .gallery {
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 8px;
+            -webkit-overflow-scrolling: touch;
+        }
+        @media (min-width: 900px) {
+            .gallery {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                overflow-x: visible;
+            }
+        }
+        .gallery img {
+            min-width: 200px;
+            max-width: 300px;
+            width: 100%;
+            border-radius: 8px;
+            object-fit: cover;
+            aspect-ratio: 4/3;
+        }
+        .video-section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .video-section video {
+            width: 100%;
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #666;
+        }
+        #loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 id="pageTitle">Session Detail</h1>
+            <div class="nav-links">
+                <a href="/sessions">All Sessions</a>
+                <a href="/">Dashboard</a>
+            </div>
+        </header>
+        <div id="loading">Loading session...</div>
+        <div id="content" style="display:none;"></div>
+    </div>
+    <script>
+        function formatDuration(secs) {
+            if (secs == null) return 'In progress';
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            const s = secs % 60;
+            if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+            if (m > 0) return m + 'm ' + s + 's';
+            return s + 's';
+        }
+
+        function fileUrl(path) {
+            if (!path) return null;
+            var parts = path.replace(/\\/g, '/').split('/');
+            return '/captures/' + parts[parts.length - 1];
+        }
+
+        async function loadSession() {
+            var pathParts = window.location.pathname.split('/');
+            var sessionId = pathParts[pathParts.length - 1];
+
+            try {
+                var res = await fetch('/api/sessions/' + sessionId);
+                if (res.status === 404) {
+                    document.getElementById('loading').innerHTML = '<p>Session not found</p>';
+                    return;
+                }
+                var s = await res.json();
+
+                document.getElementById('pageTitle').textContent = 'Session: ' + new Date(s.entry_time).toLocaleString();
+                document.getElementById('loading').style.display = 'none';
+                var content = document.getElementById('content');
+                content.style.display = 'block';
+
+                var durationSecs = s.exit_time ? Math.round((new Date(s.exit_time) - new Date(s.entry_time)) / 1000) : null;
+                var statusHtml = s.exit_time
+                    ? '<span class="value">' + new Date(s.exit_time).toLocaleString() + '</span>'
+                    : '<span class="active-badge">ACTIVE</span>';
+
+                var html = '<div class="info-card"><div class="info-grid">'
+                    + '<div class="info-item"><label>Entry Time</label><span class="value">' + new Date(s.entry_time).toLocaleString() + '</span></div>'
+                    + '<div class="info-item"><label>Exit Time</label>' + statusHtml + '</div>'
+                    + '<div class="info-item"><label>Duration</label><span class="value">' + formatDuration(durationSecs) + '</span></div>'
+                    + '<div class="info-item"><label>Sample Images</label><span class="value">' + (s.sample_images ? s.sample_images.length : 0) + '</span></div>'
+                    + '</div></div>';
+
+                // Entry/exit images
+                var entryUrl = fileUrl(s.entry_image);
+                var exitUrl = fileUrl(s.exit_image);
+                if (entryUrl || exitUrl) {
+                    html += '<div class="images-section"><h2>Entry / Exit</h2><div class="key-images">';
+                    html += '<div class="key-image-container"><div class="label">Entry</div>';
+                    html += entryUrl ? '<img src="' + entryUrl + '" alt="Entry" loading="lazy">' : '<div class="no-image">No entry image</div>';
+                    html += '</div>';
+                    html += '<div class="key-image-container"><div class="label">Exit</div>';
+                    html += exitUrl ? '<img src="' + exitUrl + '" alt="Exit" loading="lazy">' : '<div class="no-image">No exit image</div>';
+                    html += '</div>';
+                    html += '</div></div>';
+                }
+
+                // Sample images gallery
+                if (s.sample_images && s.sample_images.length > 0) {
+                    html += '<div class="images-section"><h2>Sample Images (' + s.sample_images.length + ')</h2><div class="gallery">';
+                    s.sample_images.forEach(function(img) {
+                        var url = fileUrl(img);
+                        if (url) {
+                            html += '<img src="' + url + '" alt="Sample" loading="lazy">';
+                        }
+                    });
+                    html += '</div></div>';
+                }
+
+                // Video
+                var videoUrl = fileUrl(s.video_path);
+                if (videoUrl) {
+                    html += '<div class="video-section"><h2>Video</h2>';
+                    html += '<video controls preload="metadata"><source src="' + videoUrl + '" type="video/mp4">Your browser does not support video playback.</video>';
+                    html += '</div>';
+                }
+
+                content.innerHTML = html;
+            } catch (e) {
+                console.error('Failed to load session:', e);
+                document.getElementById('loading').innerHTML = '<p>Failed to load session</p>';
+            }
+        }
+
+        loadSession();
     </script>
 </body>
 </html>

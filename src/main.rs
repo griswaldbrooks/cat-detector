@@ -136,7 +136,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     // Setup web state and frame channel if web is enabled
     #[cfg(feature = "web")]
     let (web_state, frame_tx) = if config.web.enabled {
-        let state = Arc::new(RwLock::new(web::WebAppState::new()));
+        let state = Arc::new(RwLock::new(web::WebAppState::with_dirs(
+            config.storage.output_dir.join("sessions"),
+            config.storage.output_dir.clone(),
+        )));
         let (tx, rx) = web::create_frame_channel();
 
         // Start web server
