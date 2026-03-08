@@ -26,3 +26,6 @@ config.toml
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+# pixi environments
+.pixi/*
+!.pixi/config.toml
