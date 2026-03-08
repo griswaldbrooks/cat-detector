@@ -853,9 +853,49 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
             color: #666;
         }
         .empty-state p { font-size: 18px; }
+        .lightbox-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .lightbox-overlay.active { display: flex; }
+        .lightbox-overlay img.lightbox-img {
+            max-width: 95vw;
+            max-height: 95vh;
+            object-fit: contain;
+            border-radius: 8px;
+            cursor: default;
+        }
+        .lightbox-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255,255,255,0.15);
+            border: none;
+            color: #fff;
+            font-size: 36px;
+            padding: 12px 16px;
+            cursor: pointer;
+            border-radius: 8px;
+            user-select: none;
+        }
+        .lightbox-nav:hover { background: rgba(255,255,255,0.3); }
+        .lightbox-prev { left: 12px; }
+        .lightbox-next { right: 12px; }
+        .session-thumb { cursor: pointer; }
     </style>
 </head>
 <body>
+    <div class="lightbox-overlay" id="lightbox">
+        <button class="lightbox-nav lightbox-prev" id="lightboxPrev">&#8249;</button>
+        <img class="lightbox-img" id="lightboxImg" src="" alt="Full size">
+        <button class="lightbox-nav lightbox-next" id="lightboxNext">&#8250;</button>
+    </div>
     <div class="container">
         <header>
             <h1>Cat Sessions</h1>
@@ -917,7 +957,46 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
             }
         }
 
-        loadSessions();
+        loadSessions().then(function() {
+            var overlay = document.getElementById('lightbox');
+            var lbImg = document.getElementById('lightboxImg');
+            var allImages = [];
+            var currentIndex = 0;
+
+            document.querySelectorAll('.session-thumb').forEach(function(img) {
+                var idx = allImages.length;
+                allImages.push(img.src);
+                img.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    currentIndex = idx;
+                    lbImg.src = allImages[currentIndex];
+                    overlay.classList.add('active');
+                });
+            });
+
+            function navigate(delta) {
+                if (allImages.length === 0) return;
+                currentIndex = (currentIndex + delta + allImages.length) % allImages.length;
+                lbImg.src = allImages[currentIndex];
+            }
+
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) overlay.classList.remove('active');
+            });
+            document.getElementById('lightboxPrev').addEventListener('click', function(e) {
+                e.stopPropagation(); navigate(-1);
+            });
+            document.getElementById('lightboxNext').addEventListener('click', function(e) {
+                e.stopPropagation(); navigate(1);
+            });
+            document.addEventListener('keydown', function(e) {
+                if (!overlay.classList.contains('active')) return;
+                if (e.key === 'Escape') overlay.classList.remove('active');
+                if (e.key === 'ArrowLeft') navigate(-1);
+                if (e.key === 'ArrowRight') navigate(1);
+            });
+        });
     </script>
 </body>
 </html>
@@ -1074,9 +1153,49 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
             padding: 60px 20px;
             color: #888;
         }
+        .lightbox-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .lightbox-overlay.active { display: flex; }
+        .lightbox-overlay img.lightbox-img {
+            max-width: 95vw;
+            max-height: 95vh;
+            object-fit: contain;
+            border-radius: 8px;
+            cursor: default;
+        }
+        .lightbox-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255,255,255,0.15);
+            border: none;
+            color: #fff;
+            font-size: 36px;
+            padding: 12px 16px;
+            cursor: pointer;
+            border-radius: 8px;
+            user-select: none;
+        }
+        .lightbox-nav:hover { background: rgba(255,255,255,0.3); }
+        .lightbox-prev { left: 12px; }
+        .lightbox-next { right: 12px; }
+        .gallery img, .key-image-container img { cursor: pointer; }
     </style>
 </head>
 <body>
+    <div class="lightbox-overlay" id="lightbox">
+        <button class="lightbox-nav lightbox-prev" id="lightboxPrev">&#8249;</button>
+        <img class="lightbox-img" id="lightboxImg" src="" alt="Full size">
+        <button class="lightbox-nav lightbox-next" id="lightboxNext">&#8250;</button>
+    </div>
     <div class="container">
         <header>
             <h1 id="pageTitle">Session Detail</h1>
@@ -1169,10 +1288,50 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
                 }
 
                 content.innerHTML = html;
+                initLightbox();
             } catch (e) {
                 console.error('Failed to load session:', e);
                 document.getElementById('loading').innerHTML = '<p>Failed to load session</p>';
             }
+        }
+
+        function initLightbox() {
+            var overlay = document.getElementById('lightbox');
+            var lbImg = document.getElementById('lightboxImg');
+            var allImages = [];
+            var currentIndex = 0;
+
+            document.querySelectorAll('.gallery img, .key-image-container img').forEach(function(img) {
+                var idx = allImages.length;
+                allImages.push(img.src);
+                img.addEventListener('click', function() {
+                    currentIndex = idx;
+                    lbImg.src = allImages[currentIndex];
+                    overlay.classList.add('active');
+                });
+            });
+
+            function navigate(delta) {
+                if (allImages.length === 0) return;
+                currentIndex = (currentIndex + delta + allImages.length) % allImages.length;
+                lbImg.src = allImages[currentIndex];
+            }
+
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) overlay.classList.remove('active');
+            });
+            document.getElementById('lightboxPrev').addEventListener('click', function(e) {
+                e.stopPropagation(); navigate(-1);
+            });
+            document.getElementById('lightboxNext').addEventListener('click', function(e) {
+                e.stopPropagation(); navigate(1);
+            });
+            document.addEventListener('keydown', function(e) {
+                if (!overlay.classList.contains('active')) return;
+                if (e.key === 'Escape') overlay.classList.remove('active');
+                if (e.key === 'ArrowLeft') navigate(-1);
+                if (e.key === 'ArrowRight') navigate(1);
+            });
         }
 
         loadSession();
@@ -1295,6 +1454,31 @@ mod tests {
         assert!(DASHBOARD_HTML.contains("/api/status"));
         assert!(DASHBOARD_HTML.contains("/api/captures"));
         assert!(DASHBOARD_HTML.contains("/api/stream"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_session_detail_has_lightbox_modal() {
+        assert!(SESSION_DETAIL_HTML.contains("lightbox-overlay"));
+        assert!(SESSION_DETAIL_HTML.contains("lightbox-img"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_sessions_list_has_lightbox() {
+        assert!(SESSIONS_LIST_HTML.contains("lightbox-overlay"));
+        assert!(SESSIONS_LIST_HTML.contains("lightbox-img"));
+        assert!(SESSIONS_LIST_HTML.contains("ArrowLeft"));
+        assert!(SESSIONS_LIST_HTML.contains("ArrowRight"));
+        assert!(SESSIONS_LIST_HTML.contains("Escape"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_session_detail_lightbox_has_keyboard_nav() {
+        assert!(SESSION_DETAIL_HTML.contains("ArrowLeft"));
+        assert!(SESSION_DETAIL_HTML.contains("ArrowRight"));
+        assert!(SESSION_DETAIL_HTML.contains("Escape"));
     }
 
     #[cfg(feature = "web")]
