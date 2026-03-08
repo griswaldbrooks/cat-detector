@@ -86,7 +86,9 @@ impl VideoRecorder for FfmpegRecorder {
                 "-video_size",
                 &format!("{}x{}", self.width, self.height),
                 "-framerate",
-                &self.fps.to_string(), // input framerate
+                &self.fps.to_string(), // nominal input framerate
+                "-use_wallclock_as_timestamps",
+                "1", // timestamp frames by arrival time for real-time playback
                 "-i",
                 "pipe:0", // read from stdin
                 "-c:v",
@@ -97,6 +99,8 @@ impl VideoRecorder for FfmpegRecorder {
                 "23", // quality
                 "-pix_fmt",
                 "yuv420p", // browser-compatible
+                "-vsync",
+                "vfr", // variable frame rate to match wallclock timestamps
                 "-movflags",
                 "+faststart", // streaming-friendly
             ])

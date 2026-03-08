@@ -379,10 +379,10 @@ pub struct ClipDetector {
     session: std::sync::Mutex<Session>,
     confidence_threshold: f32,
     cat_class_id: u32,
-    /// Pre-computed, L2-normalized text embedding for "a photo of a cat" [512]
+    /// Pre-computed, L2-normalized text embedding for the positive class (cat) [dim]
     cat_embedding: Vec<f32>,
-    /// Pre-computed, L2-normalized text embedding for "a photo of an empty room" [512]
-    nocat_embedding: Vec<f32>,
+    /// Pre-computed, L2-normalized text embeddings for negative classes [N][dim]
+    negative_embeddings: Vec<Vec<f32>>,
     embedding_dim: usize,
 }
 
@@ -405,7 +405,7 @@ impl ClipDetector {
             .commit_from_file(model_path)
             .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?;
 
-        // Load text embeddings: raw f32 little-endian, [512 cat][512 nocat]
+        // Load text embeddings binary file
         let emb_bytes = std::fs::read(text_embeddings_path).map_err(|e| {
             DetectorError::ModelLoadError(format!(
                 "Failed to load text embeddings from {:?}: {}",
@@ -413,26 +413,48 @@ impl ClipDetector {
             ))
         })?;
 
-        let emb_floats: Vec<f32> = emb_bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-
-        if emb_floats.len() < 2 {
+        // Format: [count: u32 LE][dim: u32 LE][embed_0: f32 x dim]...[embed_N: f32 x dim]
+        // First embedding is positive (cat), rest are negatives
+        if emb_bytes.len() < 8 {
             return Err(DetectorError::ModelLoadError(
                 "Text embeddings file too small".to_string(),
             ));
         }
 
-        let embedding_dim = emb_floats.len() / 2;
-        let cat_embedding = emb_floats[..embedding_dim].to_vec();
-        let nocat_embedding = emb_floats[embedding_dim..].to_vec();
+        let count = u32::from_le_bytes([emb_bytes[0], emb_bytes[1], emb_bytes[2], emb_bytes[3]])
+            as usize;
+        let embedding_dim =
+            u32::from_le_bytes([emb_bytes[4], emb_bytes[5], emb_bytes[6], emb_bytes[7]]) as usize;
+
+        let expected_size = 8 + count * embedding_dim * 4;
+        if emb_bytes.len() < expected_size || count < 2 {
+            return Err(DetectorError::ModelLoadError(format!(
+                "Invalid embeddings: count={}, dim={}, file_size={}, expected={}",
+                count,
+                embedding_dim,
+                emb_bytes.len(),
+                expected_size
+            )));
+        }
+
+        let float_data: Vec<f32> = emb_bytes[8..]
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        let cat_embedding = float_data[..embedding_dim].to_vec();
+        let mut negative_embeddings = Vec::new();
+        for i in 1..count {
+            let start = i * embedding_dim;
+            negative_embeddings.push(float_data[start..start + embedding_dim].to_vec());
+        }
 
         tracing::info!(
-            "Loaded CLIP model {:?} with {} text embeddings (dim={})",
+            "Loaded CLIP model {:?} with {} text embeddings (dim={}, {} negative classes)",
             model_path,
-            2,
+            count,
             embedding_dim,
+            negative_embeddings.len(),
         );
 
         Ok(Self {
@@ -440,7 +462,7 @@ impl ClipDetector {
             confidence_threshold,
             cat_class_id,
             cat_embedding,
-            nocat_embedding,
+            negative_embeddings,
             embedding_dim,
         })
     }
@@ -526,22 +548,31 @@ impl CatDetector for ClipDetector {
             image_features
         };
 
-        // Compute similarities
-        let cat_sim =
-            Self::cosine_similarity(&normalized[..self.embedding_dim], &self.cat_embedding);
-        let nocat_sim =
-            Self::cosine_similarity(&normalized[..self.embedding_dim], &self.nocat_embedding);
+        // Compute cosine similarities against all text embeddings
+        let image_emb = &normalized[..self.embedding_dim];
+        let cat_sim = Self::cosine_similarity(image_emb, &self.cat_embedding);
+        let neg_sims: Vec<f32> = self
+            .negative_embeddings
+            .iter()
+            .map(|emb| Self::cosine_similarity(image_emb, emb))
+            .collect();
 
-        // Softmax with temperature=100 to get probability
-        let max_sim = cat_sim.max(nocat_sim);
+        // Softmax with temperature=100 over all classes to get cat probability
+        let max_sim = neg_sims
+            .iter()
+            .fold(cat_sim, |max, &s| if s > max { s } else { max });
         let cat_exp = ((cat_sim - max_sim) * 100.0).exp();
-        let nocat_exp = ((nocat_sim - max_sim) * 100.0).exp();
-        let cat_prob = cat_exp / (cat_exp + nocat_exp);
+        let sum_exp: f32 = cat_exp
+            + neg_sims
+                .iter()
+                .map(|&s| ((s - max_sim) * 100.0).exp())
+                .sum::<f32>();
+        let cat_prob = cat_exp / sum_exp;
 
         tracing::debug!(
-            "CLIP: cat_sim={:.4}, nocat_sim={:.4}, cat_prob={:.4}",
+            "CLIP: cat_sim={:.4}, neg_sims={:?}, cat_prob={:.4}",
             cat_sim,
-            nocat_sim,
+            neg_sims,
             cat_prob,
         );
 
@@ -822,26 +853,44 @@ mod tests {
 
     #[test]
     fn test_clip_detector_loads_embeddings() {
-        // Create temporary embeddings file: 2 vectors of dim 4
+        // Create temporary embeddings file: 3 vectors of dim 4
+        // Format: [count: u32 LE][dim: u32 LE][embeddings: f32...]
         let cat_emb: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
-        let nocat_emb: Vec<f32> = vec![-0.5, -0.5, 0.5, 0.5];
+        let neg1_emb: Vec<f32> = vec![-0.5, -0.5, 0.5, 0.5];
+        let neg2_emb: Vec<f32> = vec![0.0, -0.5, -0.5, 0.5];
+
         let mut bytes = Vec::new();
-        for f in cat_emb.iter().chain(nocat_emb.iter()) {
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // count
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // dim
+        for f in cat_emb
+            .iter()
+            .chain(neg1_emb.iter())
+            .chain(neg2_emb.iter())
+        {
             bytes.extend_from_slice(&f.to_le_bytes());
         }
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), &bytes).unwrap();
 
-        // We can't easily test the full constructor without an ONNX model,
-        // but we can verify the embedding loading logic by checking the file format
-        let emb_floats: Vec<f32> = bytes
+        // Verify the embedding loading logic by parsing the file format
+        let data = std::fs::read(tmp.path()).unwrap();
+        let count =
+            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let dim =
+            u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+
+        assert_eq!(count, 3);
+        assert_eq!(dim, 4);
+
+        let floats: Vec<f32> = data[8..]
             .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
 
-        assert_eq!(emb_floats.len(), 8);
-        assert_eq!(emb_floats[0], 0.5);
-        assert_eq!(emb_floats[4], -0.5);
+        assert_eq!(floats.len(), 12); // 3 * 4
+        assert_eq!(floats[0], 0.5);   // cat_emb[0]
+        assert_eq!(floats[4], -0.5);  // neg1_emb[0]
+        assert_eq!(floats[8], 0.0);   // neg2_emb[0]
     }
 }
