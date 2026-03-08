@@ -48,6 +48,9 @@ enum Commands {
         /// Model input size (416 for tiny, 640 for s/m/l)
         #[arg(short, long, default_value = "640")]
         size: u32,
+        /// Model format: auto, yolox, yolo11, clip
+        #[arg(short = 'f', long, default_value = "auto")]
+        format: String,
     },
     /// Install as a systemd service
     InstallService {
@@ -103,7 +106,8 @@ async fn main() -> Result<()> {
             model,
             threshold,
             size,
-        } => test_image(image, model, threshold, size).await,
+            format,
+        } => test_image(image, model, threshold, size, format).await,
         Commands::InstallService { config } => install_service(config).await,
         Commands::UninstallService => uninstall_service().await,
         Commands::Status => show_status().await,
@@ -187,18 +191,40 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     // Initialize detector
-    let model_format =
-        parse_model_format(&config.detector.model_format, &config.detector.model_path);
-    let det = Arc::new(
-        detector::OnnxDetector::new_with_format(
-            &config.detector.model_path,
-            config.detector.confidence_threshold,
-            config.detector.cat_class_id,
-            config.detector.input_size,
-            model_format,
+    let det: Arc<dyn detector::CatDetector> = if config.detector.model_format == "clip" {
+        let text_emb_path = config
+            .detector
+            .text_embeddings_path
+            .clone()
+            .unwrap_or_else(|| {
+                config
+                    .detector
+                    .model_path
+                    .with_file_name("clip_text_embeddings.bin")
+            });
+        Arc::new(
+            detector::ClipDetector::new(
+                &config.detector.model_path,
+                &text_emb_path,
+                config.detector.confidence_threshold,
+                config.detector.cat_class_id,
+            )
+            .context("Failed to initialize CLIP detector")?,
         )
-        .context("Failed to initialize detector")?,
-    );
+    } else {
+        let model_format =
+            parse_model_format(&config.detector.model_format, &config.detector.model_path);
+        Arc::new(
+            detector::OnnxDetector::new_with_format(
+                &config.detector.model_path,
+                config.detector.confidence_threshold,
+                config.detector.cat_class_id,
+                config.detector.input_size,
+                model_format,
+            )
+            .context("Failed to initialize detector")?,
+        )
+    };
 
     // Initialize storage
     let stor = Arc::new(
@@ -316,7 +342,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         // Run detection only when interval has elapsed
         let detection_due = now.duration_since(last_detection_time) >= detection_interval;
         if detection_due {
-            use detector::CatDetector;
             match det.detect(&frame).await {
                 Ok(detections) => {
                     cat_detected = detections.iter().any(|d| det.is_cat(d));
@@ -584,29 +609,48 @@ async fn test_image(
     model_path: PathBuf,
     threshold: f32,
     input_size: u32,
+    format: String,
 ) -> Result<()> {
-    use detector::CatDetector;
-
     info!("Testing detection on {:?}", image_path);
     info!("Using model: {:?}", model_path);
     info!("Confidence threshold: {}", threshold);
-    info!("Input size: {}x{}", input_size, input_size);
 
     // Load the image
     let img = image::open(&image_path)
         .with_context(|| format!("Failed to open image: {:?}", image_path))?;
     info!("Loaded image: {}x{}", img.width(), img.height());
 
-    // Initialize detector
-    let detector =
-        detector::OnnxDetector::new_with_format(&model_path, threshold, 15, input_size, None)
-            .context("Failed to initialize detector")?;
+    // Initialize detector based on format
+    let det: Box<dyn detector::CatDetector> = if format == "clip" {
+        let text_emb_path = model_path.with_file_name("clip_text_embeddings.bin");
+        info!(
+            "Using CLIP detector with text embeddings: {:?}",
+            text_emb_path
+        );
+        Box::new(
+            detector::ClipDetector::new(&model_path, &text_emb_path, threshold, 15)
+                .context("Failed to initialize CLIP detector")?,
+        )
+    } else {
+        let model_format = parse_model_format(&format, &model_path);
+        info!("Input size: {}x{}", input_size, input_size);
+        Box::new(
+            detector::OnnxDetector::new_with_format(
+                &model_path,
+                threshold,
+                15,
+                input_size,
+                model_format,
+            )
+            .context("Failed to initialize detector")?,
+        )
+    };
     info!("Detector initialized");
 
     // Run detection
     info!("Running inference...");
     let start = std::time::Instant::now();
-    let detections = detector.detect(&img).await?;
+    let detections = det.detect(&img).await?;
     let elapsed = start.elapsed();
     info!("Inference completed in {:?}", elapsed);
 
@@ -615,24 +659,24 @@ async fn test_image(
         println!("\nNo objects detected above threshold {}", threshold);
     } else {
         println!("\nDetected {} object(s):", detections.len());
-        for (i, det) in detections.iter().enumerate() {
-            let class_name = coco_class_name(det.class_id);
-            let is_cat = detector.is_cat(det);
+        for (i, d) in detections.iter().enumerate() {
+            let class_name = coco_class_name(d.class_id);
+            let is_cat = det.is_cat(d);
             println!(
                 "  {}. {} (class {}) - confidence: {:.1}% - bbox: ({:.0}, {:.0}, {:.0}x{:.0}){}",
                 i + 1,
                 class_name,
-                det.class_id,
-                det.confidence * 100.0,
-                det.bbox.x,
-                det.bbox.y,
-                det.bbox.width,
-                det.bbox.height,
+                d.class_id,
+                d.confidence * 100.0,
+                d.bbox.x,
+                d.bbox.y,
+                d.bbox.width,
+                d.bbox.height,
                 if is_cat { " [CAT DETECTED!]" } else { "" }
             );
         }
 
-        let cat_count = detections.iter().filter(|d| detector.is_cat(d)).count();
+        let cat_count = detections.iter().filter(|d| det.is_cat(d)).count();
         if cat_count > 0 {
             println!("\n==> {} cat(s) found!", cat_count);
         } else {

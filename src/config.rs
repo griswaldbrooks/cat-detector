@@ -72,9 +72,11 @@ pub struct DetectorConfig {
     pub confidence_threshold: f32,
     #[serde(default = "default_cat_class_id")]
     pub cat_class_id: u32,
-    /// Model format: "auto" (detect from filename), "yolox", or "yolo11"
+    /// Model format: "auto" (detect from filename), "yolox", "yolo11", or "clip"
     #[serde(default = "default_model_format")]
     pub model_format: String,
+    /// Path to CLIP text embeddings file (required when model_format = "clip")
+    pub text_embeddings_path: Option<PathBuf>,
 }
 
 fn default_input_size() -> u32 {
@@ -101,6 +103,7 @@ impl Default for DetectorConfig {
             confidence_threshold: default_confidence_threshold(),
             cat_class_id: default_cat_class_id(),
             model_format: default_model_format(),
+            text_embeddings_path: None,
         }
     }
 }

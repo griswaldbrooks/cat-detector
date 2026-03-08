@@ -12,18 +12,22 @@ fps = 30
 
 [detector]
 # Path to the ONNX model file
-# yolo11n.onnx (11MB, 640x640) - fast, ~25ms inference (recommended)
+# clip_vitb32_image.onnx (336MB, 224x224) - CLIP zero-shot, ~21ms, best overhead accuracy (recommended)
+# yolo11n.onnx (11MB, 640x640) - YOLO detection, ~25ms, good for side-angle views
 # yolo11s.onnx (38MB, 640x640) - better accuracy, ~60ms inference
 # yolox_s.onnx (35MB, 640x640) - legacy, ~70ms inference
-model_path = "models/yolo11n.onnx"
-# Model input size (640 for all recommended models)
+model_path = "models/clip_vitb32_image.onnx"
+# Model input size (640 for YOLO models, ignored for CLIP)
 input_size = 640
 # Minimum confidence score for detection (0.0 - 1.0)
 confidence_threshold = 0.5
 # COCO class ID for cat (15 is the standard)
 cat_class_id = 15
-# Model format: "auto" (detect from filename), "yolox", "yolo11"
-model_format = "auto"
+# Model format: "auto" (detect from filename), "yolox", "yolo11", "clip"
+model_format = "clip"
+# Path to CLIP text embeddings (required when model_format = "clip")
+# Defaults to clip_text_embeddings.bin in the same directory as the model
+# text_embeddings_path = "models/clip_text_embeddings.bin"
 
 [storage]
 # Directory where captured images will be saved
