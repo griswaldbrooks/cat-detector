@@ -231,6 +231,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     info!("Starting cat detection...");
 
+    // Frame rate limiting for MJPEG stream
+    let frame_interval = tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
+    let mut last_frame_sent = tokio::time::Instant::now() - frame_interval;
+
     // Main detection loop with web integration
     let mut shutdown = shutdown_rx.clone();
     loop {
@@ -276,12 +280,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             }
         }
 
-        // Send frame to MJPEG stream
+        // Send frame to MJPEG stream (throttled by stream_fps)
         if let Some(ref tx) = frame_tx {
-            if let Some(ref state) = web_state {
-                let s = state.read().await;
-                if let Some(ref frame_data) = s.latest_frame {
-                    let _ = tx.send(Some(frame_data.clone()));
+            let now = tokio::time::Instant::now();
+            if now.duration_since(last_frame_sent) >= frame_interval {
+                if let Some(ref state) = web_state {
+                    let s = state.read().await;
+                    if let Some(ref frame_data) = s.latest_frame {
+                        let _ = tx.send(Some(frame_data.clone()));
+                        last_frame_sent = now;
+                    }
                 }
             }
         }
