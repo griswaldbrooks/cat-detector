@@ -30,7 +30,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `app.rs` | Generic `App<C,D,S,N>` orchestrating the detection loop |
 | `config.rs` | TOML config parsing with defaults and validation |
 | `camera.rs` | `CameraCapture` trait + V4L2Camera (auto-detect) / StubCamera |
-| `detector.rs` | `CatDetector` trait + OnnxDetector (YOLO11/YOLOX, ort crate v2) |
+| `detector.rs` | `CatDetector` trait + ClipDetector (zero-shot) / OnnxDetector (YOLO11/YOLOX) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
 | `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli) |
@@ -42,14 +42,14 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 
 ## Key Details
 
-- **Model**: YOLO11n (default), 640x640 input, cat = COCO class 15. Also supports YOLOX via `ModelFormat` auto-detection from filename
+- **Model**: CLIP ViT-B/32 (default, zero-shot, 224x224) or YOLO11n (640x640). Cat = COCO class 15. Also supports YOLOX via `ModelFormat` auto-detection
 - **ONNX Runtime**: loaded dynamically via `ORT_DYLIB_PATH` env var
 - **Cargo features**: `real-camera` (v4l2), `web` (axum), `nokhwa-camera` (unused)
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records at camera fps during cat presence
-- **Tests**: 75 unit + 9 integration; all traits have Mock* implementations
+- **Tests**: 77 unit + 9 integration; all traits have Mock* implementations
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 
 ## Issue Tracking
