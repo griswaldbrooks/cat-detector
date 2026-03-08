@@ -38,6 +38,8 @@ where
     notifier: Arc<N>,
     tracker: CatTracker,
     detection_interval_ms: u64,
+    frame_interval_ms: u64,
+    last_detection_time: Option<tokio::time::Instant>,
 }
 
 impl<C, D, S, N> App<C, D, S, N>
@@ -54,6 +56,17 @@ where
         notifier: N,
         tracking_config: &TrackingConfig,
     ) -> Self {
+        Self::new_with_fps(camera, detector, storage, notifier, tracking_config, 30)
+    }
+
+    pub fn new_with_fps(
+        camera: C,
+        detector: D,
+        storage: S,
+        notifier: N,
+        tracking_config: &TrackingConfig,
+        camera_fps: u32,
+    ) -> Self {
         let tracker = CatTracker::new(
             tracking_config.enter_threshold,
             tracking_config.exit_threshold,
@@ -67,6 +80,8 @@ where
             notifier: Arc::new(notifier),
             tracker,
             detection_interval_ms: tracking_config.detection_interval_ms,
+            frame_interval_ms: 1000 / camera_fps.max(1) as u64,
+            last_detection_time: None,
         }
     }
 
@@ -80,7 +95,7 @@ where
                 return Ok(());
             }
 
-            // Process one detection cycle
+            // Process one frame cycle
             if let Err(e) = self.process_cycle().await {
                 match &e {
                     AppError::Camera(ce) => {
@@ -95,9 +110,9 @@ where
                 }
             }
 
-            // Wait for next detection interval or shutdown
+            // Wait for next frame interval or shutdown
             tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(self.detection_interval_ms)) => {}
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(self.frame_interval_ms)) => {}
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("Shutdown signal received during sleep");
@@ -108,26 +123,50 @@ where
         }
     }
 
-    async fn process_cycle(&mut self) -> Result<(), AppError> {
-        // Capture frame
+    /// Returns true if detection was run this cycle
+    fn detection_due(&mut self) -> bool {
+        let now = tokio::time::Instant::now();
+        match self.last_detection_time {
+            None => {
+                self.last_detection_time = Some(now);
+                true
+            }
+            Some(last) => {
+                if now.duration_since(last).as_millis() as u64 >= self.detection_interval_ms {
+                    self.last_detection_time = Some(now);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Process one frame cycle. Captures a frame every call,
+    /// but only runs detection when detection_interval has elapsed.
+    /// Returns the captured frame.
+    pub async fn process_cycle(&mut self) -> Result<Option<image::DynamicImage>, AppError> {
+        // Capture frame every cycle
         let frame = self.camera.capture_frame().await?;
         let timestamp = Utc::now();
 
-        // Run detection
-        let detections = self.detector.detect(&frame).await?;
-        let cat_detected = detections.iter().any(|d| self.detector.is_cat(d));
+        // Only run detection when interval has elapsed
+        if self.detection_due() {
+            let detections = self.detector.detect(&frame).await?;
+            let cat_detected = detections.iter().any(|d| self.detector.is_cat(d));
 
-        debug!("Detection result: cat_detected={}", cat_detected);
+            debug!("Detection result: cat_detected={}", cat_detected);
 
-        // Process through tracker
-        let events = self.tracker.process_detection(cat_detected, timestamp);
+            // Process through tracker
+            let events = self.tracker.process_detection(cat_detected, timestamp);
 
-        // Handle events
-        for event in events {
-            self.handle_event(&event, &frame).await?;
+            // Handle events
+            for event in events {
+                self.handle_event(&event, &frame).await?;
+            }
         }
 
-        Ok(())
+        Ok(Some(frame))
     }
 
     async fn handle_event(
@@ -223,60 +262,46 @@ mod tests {
         Arc<MockStorage>,
         Arc<MockNotifier>,
     ) {
-        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
-        let detector = MockDetector::with_sequence(detector_sequence);
-        let storage = MockStorage::new();
-        let notifier = MockNotifier::new();
-
-        let storage_arc = Arc::new(storage);
-        let notifier_arc = Arc::new(notifier);
-
-        let tracking_config = TrackingConfig {
-            sample_interval_secs: 10,
-            enter_threshold: 2,
-            exit_threshold: 2,
-            detection_interval_ms: 100,
-        };
-
-        // We need to create a new app that uses Arc for storage and notifier
-        // For testing, we'll create a simpler version
-        let app = App {
-            camera,
-            detector: Arc::new(detector),
-            storage: storage_arc.clone(),
-            notifier: notifier_arc.clone(),
-            tracker: CatTracker::new(2, 2, 10),
-            detection_interval_ms: 100,
-        };
-
-        (app, storage_arc, notifier_arc)
+        create_test_app_with_fps(detector_sequence, 10)
     }
 
-    #[tokio::test]
-    async fn test_cat_enter_saves_image_and_notifies() {
+    fn create_test_app_with_fps(
+        detector_sequence: Vec<bool>,
+        _camera_fps: u32,
+    ) -> (
+        App<MockCamera, MockDetector, MockStorage, MockNotifier>,
+        Arc<MockStorage>,
+        Arc<MockNotifier>,
+    ) {
         let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
-        let detector = MockDetector::with_sequence(vec![true, true]); // 2 detections to enter
+        let detector = MockDetector::with_sequence(detector_sequence);
         let storage = Arc::new(MockStorage::new());
         let notifier = Arc::new(MockNotifier::new());
 
-        let tracking_config = TrackingConfig {
-            sample_interval_secs: 10,
-            enter_threshold: 2,
-            exit_threshold: 2,
-            detection_interval_ms: 100,
-        };
-
-        let mut app = App {
+        // For existing behavior tests, use frame_interval = detection_interval
+        // so detection runs every cycle (backwards compatible)
+        let app = App {
             camera,
             detector: Arc::new(detector),
             storage: storage.clone(),
             notifier: notifier.clone(),
             tracker: CatTracker::new(2, 2, 10),
             detection_interval_ms: 100,
+            frame_interval_ms: 100,
+            last_detection_time: None,
         };
+
+        (app, storage, notifier)
+    }
+
+    #[tokio::test]
+    async fn test_cat_enter_saves_image_and_notifies() {
+        let (mut app, storage, notifier) = create_test_app(vec![true, true]);
 
         // Process two cycles to trigger entry
         app.process_cycle().await.unwrap();
+        // Wait for detection interval to elapse
+        tokio::time::sleep(tokio::time::Duration::from_millis(110)).await;
         app.process_cycle().await.unwrap();
 
         // Verify storage
@@ -288,23 +313,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_cat_exit_saves_image_and_notifies() {
-        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
-        // 2 detections (enter) + 2 non-detections (exit)
-        let detector = MockDetector::with_sequence(vec![true, true, false, false]);
-        let storage = Arc::new(MockStorage::new());
-        let notifier = Arc::new(MockNotifier::new());
-
-        let mut app = App {
-            camera,
-            detector: Arc::new(detector),
-            storage: storage.clone(),
-            notifier: notifier.clone(),
-            tracker: CatTracker::new(2, 2, 10),
-            detection_interval_ms: 100,
-        };
+        let (mut app, storage, notifier) = create_test_app(vec![true, true, false, false]);
 
         // Process four cycles: enter then exit
         for _ in 0..4 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(110)).await;
             app.process_cycle().await.unwrap();
         }
 
@@ -319,51 +332,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_full_sequence_enter_stay_exit() {
-        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
-        // Enter (2) + Stay (3) + Exit (2)
-        let detector =
-            MockDetector::with_sequence(vec![true, true, true, true, true, false, false]);
-        let storage = Arc::new(MockStorage::new());
-        let notifier = Arc::new(MockNotifier::new());
+        let (mut app, storage, _notifier) =
+            create_test_app(vec![true, true, true, true, true, false, false]);
 
-        let mut app = App {
-            camera,
-            detector: Arc::new(detector),
-            storage: storage.clone(),
-            notifier: notifier.clone(),
-            tracker: CatTracker::new(2, 2, 1), // 1 second sample interval for testing
-            detection_interval_ms: 100,
-        };
-
-        // Process all cycles
+        // Process all cycles with detection interval waits
         for _ in 0..7 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(110)).await;
             app.process_cycle().await.unwrap();
-            // Small delay to ensure timestamps differ enough for samples
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
 
         // Verify we got entry and exit
         assert_eq!(storage.get_images_by_type(ImageType::Entry).len(), 1);
         assert_eq!(storage.get_images_by_type(ImageType::Exit).len(), 1);
-
-        // Note: Sample timing depends on actual time elapsed, may or may not have samples
     }
 
     #[tokio::test]
     async fn test_shutdown_signal_stops_app() {
-        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
-        let detector = MockDetector::always_detect_cat();
-        let storage = Arc::new(MockStorage::new());
-        let notifier = Arc::new(MockNotifier::new());
-
-        let mut app = App {
-            camera,
-            detector: Arc::new(detector),
-            storage: storage.clone(),
-            notifier: notifier.clone(),
-            tracker: CatTracker::new(2, 2, 10),
-            detection_interval_ms: 100,
-        };
+        let (mut app, _storage, _notifier) = create_test_app(vec![true]);
 
         let (tx, rx) = watch::channel(false);
 
@@ -389,13 +374,62 @@ mod tests {
             notifier: notifier.clone(),
             tracker: CatTracker::new(2, 2, 10),
             detection_interval_ms: 100,
+            frame_interval_ms: 100,
+            last_detection_time: None,
         };
 
-        // Should not fail even with disabled notifier
+        // Process two cycles with detection interval waits
         app.process_cycle().await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(110)).await;
         app.process_cycle().await.unwrap();
 
         // Storage should still work
         assert_eq!(storage.get_images_by_type(ImageType::Entry).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_decoupled_loop_captures_every_frame_detects_periodically() {
+        // detection_interval=500ms, 5 rapid calls with no sleep between
+        // Camera captures every time, detection only on first call
+        let camera = MockCamera::from_solid_colors(vec![[128, 128, 128]], 640, 480);
+        // Provide enough results for potential detections
+        let detector = MockDetector::with_sequence(vec![true, true, true, true, true]);
+        let storage = Arc::new(MockStorage::new());
+        let notifier = Arc::new(MockNotifier::new());
+
+        let detector_arc = Arc::new(detector);
+
+        let mut app = App {
+            camera,
+            detector: detector_arc.clone(),
+            storage: storage.clone(),
+            notifier: notifier.clone(),
+            tracker: CatTracker::new(2, 2, 10),
+            detection_interval_ms: 500,
+            frame_interval_ms: 33,
+            last_detection_time: None,
+        };
+
+        // Call process_cycle 5 times rapidly (no sleep between)
+        let mut frames_captured = 0;
+        for _ in 0..5 {
+            let result = app.process_cycle().await.unwrap();
+            if result.is_some() {
+                frames_captured += 1;
+            }
+        }
+
+        // All 5 frames should be captured
+        assert_eq!(frames_captured, 5);
+
+        // But detector should only have been called once (first call is always due)
+        assert_eq!(detector_arc.call_count(), 1);
+
+        // Now wait for detection interval and call again
+        tokio::time::sleep(tokio::time::Duration::from_millis(510)).await;
+        app.process_cycle().await.unwrap();
+
+        // Detector should now have been called twice
+        assert_eq!(detector_arc.call_count(), 2);
     }
 }

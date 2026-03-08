@@ -245,17 +245,28 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     info!("Starting cat detection...");
 
-    // Frame rate limiting for MJPEG stream
-    let frame_interval =
+    // Frame timing
+    let camera_fps = config.camera.fps.max(1);
+    let frame_interval_ms = 1000 / camera_fps as u64;
+    let detection_interval =
+        tokio::time::Duration::from_millis(config.tracking.detection_interval_ms);
+    let mut last_detection_time = tokio::time::Instant::now() - detection_interval; // detect on first frame
+
+    // MJPEG stream throttling
+    let stream_interval =
         tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
-    let mut last_frame_sent = tokio::time::Instant::now() - frame_interval;
+    let mut last_frame_sent = tokio::time::Instant::now() - stream_interval;
 
     // Exponential backoff for error recovery
-    let base_interval = tokio::time::Duration::from_millis(config.tracking.detection_interval_ms);
+    let base_interval = tokio::time::Duration::from_millis(frame_interval_ms);
     let max_backoff = tokio::time::Duration::from_secs(60);
     let mut consecutive_errors: u32 = 0;
 
-    // Main detection loop with web integration
+    // Track latest detections for non-detection frames
+    let mut latest_detections = Vec::new();
+    let mut cat_detected = false;
+
+    // Main frame loop — captures at camera fps, detects periodically
     let mut shutdown = shutdown_rx.clone();
     loop {
         // Check for shutdown
@@ -264,9 +275,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             break;
         }
 
-        // Capture frame
+        // Capture frame every cycle
         use camera::CameraCapture;
-        use detector::CatDetector;
         let frame = match cam.capture_frame().await {
             Ok(f) => f,
             Err(e) => {
@@ -284,35 +294,32 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             }
         };
 
-        let timestamp = chrono::Utc::now();
-
-        // Run detection
-        let detections = match det.detect(&frame).await {
-            Ok(d) => d,
-            Err(e) => {
-                consecutive_errors += 1;
-                let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
-                let backoff = backoff.min(max_backoff);
-                tracing::warn!(
-                    "Detector error (retry in {:?}, {} consecutive): {}",
-                    backoff,
-                    consecutive_errors,
-                    e
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
-            }
-        };
-
-        // Reset backoff on success
+        // Reset backoff on successful capture
         consecutive_errors = 0;
 
-        let cat_detected = detections.iter().any(|d| det.is_cat(d));
+        let timestamp = chrono::Utc::now();
+        let now = tokio::time::Instant::now();
 
-        // Update web state with frame and detections
+        // Run detection only when interval has elapsed
+        let detection_due = now.duration_since(last_detection_time) >= detection_interval;
+        if detection_due {
+            use detector::CatDetector;
+            match det.detect(&frame).await {
+                Ok(detections) => {
+                    cat_detected = detections.iter().any(|d| det.is_cat(d));
+                    latest_detections = detections;
+                    last_detection_time = now;
+                }
+                Err(e) => {
+                    tracing::warn!("Detector error (will retry): {}", e);
+                }
+            }
+        }
+
+        // Update web state with every frame (smoother MJPEG stream)
         if let Some(ref state) = web_state {
             let mut s = state.write().await;
-            s.update_frame(&frame, &detections);
+            s.update_frame(&frame, &latest_detections);
             s.cat_present = cat_detected;
             if cat_detected {
                 s.last_detection = Some(timestamp);
@@ -321,8 +328,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
         // Send frame to MJPEG stream (throttled by stream_fps)
         if let Some(ref tx) = frame_tx {
-            let now = tokio::time::Instant::now();
-            if now.duration_since(last_frame_sent) >= frame_interval {
+            if now.duration_since(last_frame_sent) >= stream_interval {
                 if let Some(ref state) = web_state {
                     let s = state.read().await;
                     if let Some(ref frame_data) = s.latest_frame {
@@ -333,103 +339,101 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             }
         }
 
-        // Process through tracker
-        let events = tracker.process_detection(cat_detected, timestamp);
+        // Process tracker and handle events only on detection frames
+        if detection_due {
+            let events = tracker.process_detection(cat_detected, timestamp);
 
-        // Handle events
-        for event in events {
-            use cat_detector::tracker::TrackerEvent;
-            use notifier::Notifier;
-            use storage::ImageStorage;
+            for event in events {
+                use cat_detector::tracker::TrackerEvent;
+                use notifier::Notifier;
+                use storage::ImageStorage;
 
-            match event {
-                TrackerEvent::CatEntered { timestamp } => {
-                    info!("Cat entered at {}", timestamp);
+                match event {
+                    TrackerEvent::CatEntered { timestamp } => {
+                        info!("Cat entered at {}", timestamp);
 
-                    let saved = stor
-                        .save_image(&frame, storage::ImageType::Entry, timestamp)
-                        .await?;
-                    info!("Saved entry image: {:?}", saved.path);
+                        let saved = stor
+                            .save_image(&frame, storage::ImageType::Entry, timestamp)
+                            .await?;
+                        info!("Saved entry image: {:?}", saved.path);
 
-                    // Update web captures
-                    if let Some(ref state) = web_state {
-                        let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(
-                            saved.path.clone(),
-                            timestamp,
-                            storage::ImageType::Entry,
-                        ));
-                    }
-
-                    if notif.is_enabled() {
-                        if let Err(e) = notif
-                            .notify(notifier::NotificationEvent::CatEntered { timestamp })
-                            .await
-                        {
-                            tracing::warn!("Failed to send entry notification: {}", e);
-                        }
-                    }
-                }
-
-                TrackerEvent::CatExited {
-                    timestamp,
-                    entry_time,
-                } => {
-                    let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
-                    info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
-
-                    let saved = stor
-                        .save_image(&frame, storage::ImageType::Exit, timestamp)
-                        .await?;
-                    info!("Saved exit image: {:?}", saved.path);
-
-                    // Update web captures
-                    if let Some(ref state) = web_state {
-                        let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(
-                            saved.path.clone(),
-                            timestamp,
-                            storage::ImageType::Exit,
-                        ));
-                    }
-
-                    if notif.is_enabled() {
-                        if let Err(e) = notif
-                            .notify(notifier::NotificationEvent::CatExited {
+                        if let Some(ref state) = web_state {
+                            let mut s = state.write().await;
+                            s.add_capture(web::CaptureInfo::new(
+                                saved.path.clone(),
                                 timestamp,
-                                duration_secs,
-                            })
-                            .await
-                        {
-                            tracing::warn!("Failed to send exit notification: {}", e);
+                                storage::ImageType::Entry,
+                            ));
+                        }
+
+                        if notif.is_enabled() {
+                            if let Err(e) = notif
+                                .notify(notifier::NotificationEvent::CatEntered { timestamp })
+                                .await
+                            {
+                                tracing::warn!("Failed to send entry notification: {}", e);
+                            }
                         }
                     }
-                }
 
-                TrackerEvent::SampleDue { timestamp } => {
-                    tracing::debug!("Sample due at {}", timestamp);
+                    TrackerEvent::CatExited {
+                        timestamp,
+                        entry_time,
+                    } => {
+                        let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
+                        info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
 
-                    let saved = stor
-                        .save_image(&frame, storage::ImageType::Sample, timestamp)
-                        .await?;
-                    tracing::debug!("Saved sample image: {:?}", saved.path);
+                        let saved = stor
+                            .save_image(&frame, storage::ImageType::Exit, timestamp)
+                            .await?;
+                        info!("Saved exit image: {:?}", saved.path);
 
-                    // Update web captures
-                    if let Some(ref state) = web_state {
-                        let mut s = state.write().await;
-                        s.add_capture(web::CaptureInfo::new(
-                            saved.path.clone(),
-                            timestamp,
-                            storage::ImageType::Sample,
-                        ));
+                        if let Some(ref state) = web_state {
+                            let mut s = state.write().await;
+                            s.add_capture(web::CaptureInfo::new(
+                                saved.path.clone(),
+                                timestamp,
+                                storage::ImageType::Exit,
+                            ));
+                        }
+
+                        if notif.is_enabled() {
+                            if let Err(e) = notif
+                                .notify(notifier::NotificationEvent::CatExited {
+                                    timestamp,
+                                    duration_secs,
+                                })
+                                .await
+                            {
+                                tracing::warn!("Failed to send exit notification: {}", e);
+                            }
+                        }
+                    }
+
+                    TrackerEvent::SampleDue { timestamp } => {
+                        tracing::debug!("Sample due at {}", timestamp);
+
+                        let saved = stor
+                            .save_image(&frame, storage::ImageType::Sample, timestamp)
+                            .await?;
+                        tracing::debug!("Saved sample image: {:?}", saved.path);
+
+                        if let Some(ref state) = web_state {
+                            let mut s = state.write().await;
+                            s.add_capture(web::CaptureInfo::new(
+                                saved.path.clone(),
+                                timestamp,
+                                storage::ImageType::Sample,
+                            ));
+                        }
                     }
                 }
             }
         }
 
-        // Wait for next detection interval or shutdown
+        // Wait for next frame interval or shutdown
         tokio::select! {
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)) => {}
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(frame_interval_ms)) => {}
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     info!("Shutdown signal received during sleep");
