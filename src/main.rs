@@ -235,6 +235,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let frame_interval = tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
     let mut last_frame_sent = tokio::time::Instant::now() - frame_interval;
 
+    // Exponential backoff for error recovery
+    let base_interval = tokio::time::Duration::from_millis(config.tracking.detection_interval_ms);
+    let max_backoff = tokio::time::Duration::from_secs(60);
+    let mut consecutive_errors: u32 = 0;
+
     // Main detection loop with web integration
     let mut shutdown = shutdown_rx.clone();
     loop {
@@ -250,8 +255,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         let frame = match cam.capture_frame().await {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!("Camera error (will retry): {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)).await;
+                consecutive_errors += 1;
+                let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
+                let backoff = backoff.min(max_backoff);
+                tracing::warn!("Camera error (retry in {:?}, {} consecutive): {}", backoff, consecutive_errors, e);
+                tokio::time::sleep(backoff).await;
                 continue;
             }
         };
@@ -262,11 +270,17 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         let detections = match det.detect(&frame).await {
             Ok(d) => d,
             Err(e) => {
-                tracing::warn!("Detector error (will retry): {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_millis(config.tracking.detection_interval_ms)).await;
+                consecutive_errors += 1;
+                let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
+                let backoff = backoff.min(max_backoff);
+                tracing::warn!("Detector error (retry in {:?}, {} consecutive): {}", backoff, consecutive_errors, e);
+                tokio::time::sleep(backoff).await;
                 continue;
             }
         };
+
+        // Reset backoff on success
+        consecutive_errors = 0;
 
         let cat_detected = detections.iter().any(|d| det.is_cat(d));
 
