@@ -301,6 +301,7 @@ pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
         .route("/", get(dashboard_handler))
         .route("/api/status", get(status_handler))
         .route("/api/captures", get(captures_handler))
+        .route("/api/frame", get(frame_handler))
         .route("/api/stream", get(move || stream_handler(frame_rx.clone())))
         .with_state(state)
 }
@@ -331,6 +332,21 @@ async fn status_handler(State(state): State<SharedWebState>) -> Json<StatusRespo
 async fn captures_handler(State(state): State<SharedWebState>) -> Json<Vec<CaptureInfo>> {
     let state = state.read().await;
     Json(state.recent_captures.iter().cloned().collect())
+}
+
+#[cfg(feature = "web")]
+async fn frame_handler(State(state): State<SharedWebState>) -> impl IntoResponse {
+    let state = state.read().await;
+    match &state.latest_frame {
+        Some(jpeg_data) => Response::builder()
+            .header(header::CONTENT_TYPE, "image/jpeg")
+            .body(Body::from(jpeg_data.clone()))
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body(Body::from("No frame available"))
+            .unwrap(),
+    }
 }
 
 #[cfg(feature = "web")]
