@@ -9,6 +9,7 @@ pub mod detector;
 pub mod notifier;
 pub mod recorder;
 pub mod service;
+pub mod session;
 pub mod storage;
 pub mod tracker;
 pub mod web;

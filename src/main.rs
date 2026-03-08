@@ -1,4 +1,4 @@
-use cat_detector::{camera, config, detector, notifier, service, storage, web};
+use cat_detector::{camera, config, detector, notifier, recorder, service, storage, web};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -237,6 +237,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         config.tracking.sample_interval_secs,
     );
 
+    // Initialize session manager and video recorder
+    let mut session_mgr =
+        cat_detector::session::SessionManager::new(config.storage.output_dir.join("sessions"));
+    let mut video_recorder = recorder::FfmpegRecorder::new(
+        "ffmpeg",
+        config.camera.frame_width,
+        config.camera.frame_height,
+        config.camera.fps,
+    );
+
     // Mark as detecting in web state
     if let Some(ref state) = web_state {
         let mut s = state.write().await;
@@ -339,6 +349,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             }
         }
 
+        // Add every frame to video recorder if recording
+        {
+            use recorder::VideoRecorder;
+            if video_recorder.is_recording() {
+                if let Err(e) = video_recorder.add_frame(&frame) {
+                    tracing::warn!("Failed to record frame: {}", e);
+                }
+            }
+        }
+
         // Process tracker and handle events only on detection frames
         if detection_due {
             let events = tracker.process_detection(cat_detected, timestamp);
@@ -352,10 +372,25 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                     TrackerEvent::CatEntered { timestamp } => {
                         info!("Cat entered at {}", timestamp);
 
+                        // Start new session
+                        session_mgr.start_session(timestamp);
+
+                        // Start video recording
+                        {
+                            use recorder::VideoRecorder;
+                            if let Err(e) = video_recorder
+                                .start_recording(&config.storage.output_dir, timestamp)
+                            {
+                                tracing::warn!("Failed to start recording: {}", e);
+                            }
+                        }
+
                         let saved = stor
                             .save_image(&frame, storage::ImageType::Entry, timestamp)
                             .await?;
                         info!("Saved entry image: {:?}", saved.path);
+
+                        session_mgr.set_entry_image(saved.path.clone());
 
                         if let Some(ref state) = web_state {
                             let mut s = state.write().await;
@@ -383,10 +418,39 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
                         info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
 
+                        // Stop video recording
+                        {
+                            use recorder::VideoRecorder;
+                            match video_recorder.stop_recording() {
+                                Ok(Some(video_path)) => {
+                                    info!("Video saved to {:?}", video_path);
+                                    session_mgr.set_video_path(video_path);
+                                }
+                                Ok(None) => {}
+                                Err(e) => tracing::warn!("Failed to stop recording: {}", e),
+                            }
+                        }
+
                         let saved = stor
                             .save_image(&frame, storage::ImageType::Exit, timestamp)
                             .await?;
                         info!("Saved exit image: {:?}", saved.path);
+
+                        session_mgr.set_exit_image(saved.path.clone());
+
+                        // End and persist session
+                        match session_mgr.end_session(timestamp) {
+                            Ok(Some(session)) => {
+                                info!(
+                                    "Session {} completed: {}s, {} samples",
+                                    session.id,
+                                    session.duration_secs().unwrap_or(0),
+                                    session.sample_images.len()
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!("Failed to persist session: {}", e),
+                        }
 
                         if let Some(ref state) = web_state {
                             let mut s = state.write().await;
@@ -417,6 +481,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                             .save_image(&frame, storage::ImageType::Sample, timestamp)
                             .await?;
                         tracing::debug!("Saved sample image: {:?}", saved.path);
+
+                        session_mgr.add_sample_image(saved.path.clone());
 
                         if let Some(ref state) = web_state {
                             let mut s = state.write().await;
