@@ -10,7 +10,7 @@ ssh "$TARGET" "cd ~/$REMOTE_DIR && \
     ./cat-detector install-service --config ~/$REMOTE_DIR/config.toml"
 
 echo "Starting service..."
-ssh "$TARGET" "sudo systemctl start cat-detector"
+ssh "$TARGET" "sudo -n systemctl start cat-detector"
 
 echo "Service status:"
 ssh "$TARGET" "systemctl status cat-detector --no-pager"
