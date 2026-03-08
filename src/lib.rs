@@ -7,6 +7,7 @@ pub mod camera;
 pub mod config;
 pub mod detector;
 pub mod notifier;
+pub mod recorder;
 pub mod service;
 pub mod storage;
 pub mod tracker;
