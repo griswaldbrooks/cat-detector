@@ -58,6 +58,8 @@ pub struct WebAppState {
     pub sessions_dir: PathBuf,
     /// Directory where captures (images/videos) are stored
     pub captures_dir: PathBuf,
+    /// Static system info set at startup
+    pub system_info: Option<SystemInfoResponse>,
 }
 
 impl Default for WebAppState {
@@ -72,6 +74,7 @@ impl Default for WebAppState {
             current_detections: Vec::new(),
             sessions_dir: PathBuf::from("captures/sessions"),
             captures_dir: PathBuf::from("captures"),
+            system_info: None,
         }
     }
 }
@@ -289,6 +292,16 @@ fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, image::ImageError> {
     Ok(buffer)
 }
 
+/// API response for /api/system-info
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemInfoResponse {
+    pub model_name: String,
+    pub model_format: String,
+    pub confidence_threshold: f32,
+    pub detection_interval_ms: u64,
+    pub camera_resolution: String,
+}
+
 /// API response for /api/status
 #[derive(Serialize)]
 pub struct StatusResponse {
@@ -319,6 +332,7 @@ pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
         .route("/sessions", get(sessions_list_handler))
         .route("/sessions/:id", get(session_detail_handler))
         .route("/api/status", get(status_handler))
+        .route("/api/system-info", get(system_info_handler))
         .route("/api/captures", get(captures_handler))
         .route("/api/sessions", get(sessions_api_handler))
         .route("/api/sessions/:id", get(session_detail_api_handler))
@@ -348,6 +362,22 @@ async fn status_handler(State(state): State<SharedWebState>) -> Json<StatusRespo
         uptime_secs: uptime,
         detection_count: state.current_detections.len(),
     })
+}
+
+#[cfg(feature = "web")]
+async fn system_info_handler(State(state): State<SharedWebState>) -> impl IntoResponse {
+    let state = state.read().await;
+    match &state.system_info {
+        Some(info) => Json(serde_json::json!({
+            "model_name": info.model_name,
+            "model_format": info.model_format,
+            "confidence_threshold": info.confidence_threshold,
+            "detection_interval_ms": info.detection_interval_ms,
+            "camera_resolution": info.camera_resolution,
+        }))
+        .into_response(),
+        None => Json(serde_json::json!({})).into_response(),
+    }
 }
 
 #[cfg(feature = "web")]
@@ -631,6 +661,52 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             font-size: 18px;
             color: #4ade80;
         }
+        .info-btn {
+            background: none;
+            border: 1px solid #555;
+            color: #aaa;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .info-btn:hover { border-color: #888; color: #eee; }
+        .system-info-panel {
+            display: none;
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .system-info-panel.visible { display: block; }
+        .system-info-panel h2 {
+            font-size: 14px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .info-grid .info-item {
+            font-size: 13px;
+        }
+        .info-grid .info-label {
+            color: #888;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+        .info-grid .info-value {
+            color: #eee;
+            font-size: 15px;
+        }
     </style>
 </head>
 <body>
@@ -639,12 +715,18 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <h1>Cat Detector</h1>
             <nav style="display:flex;align-items:center;gap:20px;">
                 <a href="/sessions" style="color:#60a5fa;text-decoration:none;font-size:14px;">Sessions</a>
+                <button class="info-btn" id="infoBtn" title="System Info">i</button>
                 <div class="status-indicator">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Connecting...</span>
                 </div>
             </nav>
         </header>
+
+        <div class="system-info-panel" id="systemInfoPanel">
+            <h2>System Info</h2>
+            <div class="info-grid" id="systemInfoGrid">Loading...</div>
+        </div>
 
         <div class="main-content">
             <div class="stream-container">
@@ -745,6 +827,32 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 console.error('Failed to fetch captures:', e);
             }
         }
+
+        // System info panel
+        var infoLoaded = false;
+        document.getElementById('infoBtn').addEventListener('click', function() {
+            var panel = document.getElementById('systemInfoPanel');
+            panel.classList.toggle('visible');
+            if (!infoLoaded) {
+                infoLoaded = true;
+                fetch('/api/system-info').then(function(r) { return r.json(); }).then(function(info) {
+                    var grid = document.getElementById('systemInfoGrid');
+                    var items = [
+                        ['Model', info.model_name || 'Unknown'],
+                        ['Format', info.model_format || 'Unknown'],
+                        ['Threshold', info.confidence_threshold != null ? info.confidence_threshold.toFixed(2) : 'N/A'],
+                        ['Detection Interval', (info.detection_interval_ms || 0) + 'ms'],
+                        ['Camera', info.camera_resolution || 'Unknown'],
+                    ];
+                    grid.innerHTML = items.map(function(item) {
+                        return '<div class="info-item"><div class="info-label">' + item[0] + '</div><div class="info-value">' + item[1] + '</div></div>';
+                    }).join('');
+                }).catch(function() {
+                    document.getElementById('systemInfoGrid').textContent = 'Failed to load';
+                    infoLoaded = false;
+                });
+            }
+        });
 
         // Initial load
         updateStatus();
@@ -1447,6 +1555,22 @@ mod tests {
         assert!(json_str.contains("\"cat_present\":false"));
     }
 
+    #[test]
+    fn test_system_info_response_serializes() {
+        let response = SystemInfoResponse {
+            model_name: "clip_vitb32_image.onnx".to_string(),
+            model_format: "clip".to_string(),
+            confidence_threshold: 0.5,
+            detection_interval_ms: 500,
+            camera_resolution: "640x480".to_string(),
+        };
+
+        let json_str = serde_json::to_string(&response).unwrap();
+        assert!(json_str.contains("\"model_name\":\"clip_vitb32_image.onnx\""));
+        assert!(json_str.contains("\"detection_interval_ms\":500"));
+        assert!(json_str.contains("\"camera_resolution\":\"640x480\""));
+    }
+
     #[cfg(feature = "web")]
     #[test]
     fn test_dashboard_html_is_valid() {
@@ -1454,6 +1578,13 @@ mod tests {
         assert!(DASHBOARD_HTML.contains("/api/status"));
         assert!(DASHBOARD_HTML.contains("/api/captures"));
         assert!(DASHBOARD_HTML.contains("/api/stream"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_dashboard_has_system_info_panel() {
+        assert!(DASHBOARD_HTML.contains("/api/system-info"));
+        assert!(DASHBOARD_HTML.contains("system-info-panel"));
     }
 
     #[cfg(feature = "web")]
@@ -1505,6 +1636,43 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let content_type = response.headers().get("content-type").unwrap();
         assert!(content_type.to_str().unwrap().contains("application/json"));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_system_info_endpoint_returns_json() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut web_state = WebAppState::new();
+        web_state.system_info = Some(SystemInfoResponse {
+            model_name: "clip_vitb32_image.onnx".to_string(),
+            model_format: "clip".to_string(),
+            confidence_threshold: 0.5,
+            detection_interval_ms: 500,
+            camera_resolution: "640x480".to_string(),
+        });
+        let state = Arc::new(RwLock::new(web_state));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system-info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(json_str.contains("clip_vitb32_image.onnx"));
+        assert!(json_str.contains("\"detection_interval_ms\":500"));
     }
 
     #[cfg(feature = "web")]

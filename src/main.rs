@@ -140,10 +140,26 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     // Setup web state and frame channel if web is enabled
     #[cfg(feature = "web")]
     let (web_state, frame_tx) = if config.web.enabled {
-        let state = Arc::new(RwLock::new(web::WebAppState::with_dirs(
+        let mut web_app_state = web::WebAppState::with_dirs(
             config.storage.output_dir.join("sessions"),
             config.storage.output_dir.clone(),
-        )));
+        );
+        web_app_state.system_info = Some(web::SystemInfoResponse {
+            model_name: config
+                .detector
+                .model_path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            model_format: config.detector.model_format.clone(),
+            confidence_threshold: config.detector.confidence_threshold,
+            detection_interval_ms: config.tracking.detection_interval_ms,
+            camera_resolution: format!(
+                "{}x{}",
+                config.camera.frame_width, config.camera.frame_height
+            ),
+        });
+        let state = Arc::new(RwLock::new(web_app_state));
         let (tx, rx) = web::create_frame_channel();
 
         // Start web server
