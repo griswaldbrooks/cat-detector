@@ -7,26 +7,25 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 ## Philosophy
 
-**Core principle**: Tests should verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't.
+**Core principle**: Tests should verify behavior through public trait interfaces, not implementation details. Code can change entirely; tests shouldn't.
 
-**Good tests** are integration-style: they exercise real code paths through public APIs. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification - "user can checkout with valid cart" tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
+**Good tests** are integration-style: they exercise real code paths through trait interfaces. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification — `test_cat_enter_saves_image_and_notifies` tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
 
-**Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
+**Bad tests** are coupled to implementation. They test private methods, assert on internal state, or verify through external means (like checking the filesystem directly instead of using the trait). The warning sign: your test breaks when you refactor, but behavior hasn't changed.
 
 See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
 
 ## Anti-Pattern: Horizontal Slices
 
-**DO NOT write all tests first, then all implementation.** This is "horizontal slicing" - treating RED as "write all tests" and GREEN as "write all code."
+**DO NOT write all tests first, then all implementation.** This is "horizontal slicing" — treating RED as "write all tests" and GREEN as "write all code."
 
 This produces **crap tests**:
 
 - Tests written in bulk test _imagined_ behavior, not _actual_ behavior
-- You end up testing the _shape_ of things (data structures, function signatures) rather than user-facing behavior
-- Tests become insensitive to real changes - they pass when behavior breaks, fail when behavior is fine
-- You outrun your headlights, committing to test structure before understanding the implementation
+- You end up testing the _shape_ of things (struct fields, function signatures) rather than user-facing behavior
+- Tests become insensitive to real changes — they pass when behavior breaks, fail when behavior is fine
 
-**Correct approach**: Vertical slices via tracer bullets. One test → one implementation → repeat. Each test responds to what you learned from the previous cycle. Because you just wrote the code, you know exactly what behavior matters and how to verify it.
+**Correct approach**: Vertical slices via tracer bullets. One test → one implementation → repeat.
 
 ```
 WRONG (horizontal):
@@ -46,27 +45,23 @@ RIGHT (vertical):
 
 Before writing any code:
 
-- [ ] Confirm with user what interface changes are needed
+- [ ] Confirm with user what interface (trait) changes are needed
 - [ ] Confirm with user which behaviors to test (prioritize)
-- [ ] Identify opportunities for [deep modules](deep-modules.md) (small interface, deep implementation)
+- [ ] Identify opportunities for [deep modules](deep-modules.md)
 - [ ] Design interfaces for [testability](interface-design.md)
 - [ ] List the behaviors to test (not implementation steps)
 - [ ] Get user approval on the plan
 
-Ask: "What should the public interface look like? Which behaviors are most important to test?"
-
-**You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
+**You can't test everything.** Confirm with the user exactly which behaviors matter most.
 
 ### 2. Tracer Bullet
 
-Write ONE test that confirms ONE thing about the system:
+Write ONE test that confirms ONE thing:
 
 ```
-RED:   Write test for first behavior → test fails
-GREEN: Write minimal code to pass → test passes
+RED:   Write test → cargo test --lib → test fails
+GREEN: Write minimal code → cargo test --lib → test passes
 ```
-
-This is your tracer bullet - proves the path works end-to-end.
 
 ### 3. Incremental Loop
 
@@ -89,19 +84,29 @@ Rules:
 After all tests pass, look for [refactor candidates](refactoring.md):
 
 - [ ] Extract duplication
-- [ ] Deepen modules (move complexity behind simple interfaces)
-- [ ] Apply SOLID principles where natural
-- [ ] Consider what new code reveals about existing code
-- [ ] Run tests after each refactor step
+- [ ] Deepen modules (move complexity behind simple trait interfaces)
+- [ ] Replace `.unwrap()` with `?` or graceful error handling
+- [ ] Run `cargo test --lib` after each refactor step
+- [ ] Run `cargo clippy --all-features -- -D warnings` at the end
 
 **Never refactor while RED.** Get to GREEN first.
+
+## Project Conventions
+
+- Place tests in `#[cfg(test)] mod tests` at bottom of each source file
+- Use `#[tokio::test]` for async tests
+- Name tests `test_<what>_<condition>_<expected>`
+- Use `Mock*` structs from the same module (see [mocking.md](mocking.md))
+- Use `tempfile` crate for filesystem tests
+- Use `thiserror` enums for errors, not string errors
 
 ## Checklist Per Cycle
 
 ```
 [ ] Test describes behavior, not implementation
-[ ] Test uses public interface only
+[ ] Test uses public trait interface only
 [ ] Test would survive internal refactor
 [ ] Code is minimal for this test
 [ ] No speculative features added
+[ ] cargo test --lib passes
 ```

@@ -26,6 +26,14 @@ From "A Philosophy of Software Design":
 └─────────────────────────────────┘
 ```
 
+## Examples in This Project
+
+**Deep**: `OnnxDetector` — simple `detect(&DynamicImage) -> Vec<Detection>` interface hides preprocessing, inference, grid decoding, NMS.
+
+**Deep**: `CatTracker` — simple `update(bool) -> Option<TrackerEvent>` hides hysteresis state machine with enter/exit thresholds and timing.
+
+**Shallow (avoid)**: A notifier that just wraps `Command::new("signal-cli")` with no validation, timeout, or retry logic adds interface without depth.
+
 When designing interfaces, ask:
 
 - Can I reduce the number of methods?

@@ -2,60 +2,74 @@
 
 ## Good Tests
 
-**Integration-style**: Test through real interfaces, not mocks of internal parts.
+**Integration-style**: Test through real trait interfaces, not internals.
 
-```typescript
-// GOOD: Tests observable behavior
-test("user can checkout with valid cart", async () => {
-  const cart = createCart();
-  cart.add(product);
-  const result = await checkout(cart, paymentMethod);
-  expect(result.status).toBe("confirmed");
-});
+```rust
+// GOOD: Tests observable behavior through the trait
+#[tokio::test]
+async fn test_cat_enter_saves_image_and_notifies() {
+    let camera = MockCamera::from_solid_colors(vec![[255, 0, 0]], 100, 100);
+    let detector = MockDetector::always_detect_cat();
+    let storage = MockStorage::new();
+    let notifier = MockNotifier::new();
+
+    let mut app = App::new(camera, detector, storage.clone(), notifier.clone(), config);
+    app.run_once().await.unwrap();
+
+    assert_eq!(storage.saved_images().len(), 1);
+    assert_eq!(notifier.notifications().len(), 1);
+}
 ```
 
 Characteristics:
 
-- Tests behavior users/callers care about
-- Uses public API only
+- Tests behavior through public trait interfaces
+- Uses `Mock*` structs that implement the real traits
 - Survives internal refactors
 - Describes WHAT, not HOW
 - One logical assertion per test
+- Named `test_<what>_<condition>_<expected>`
 
 ## Bad Tests
 
 **Implementation-detail tests**: Coupled to internal structure.
 
-```typescript
-// BAD: Tests implementation details
-test("checkout calls paymentService.process", async () => {
-  const mockPayment = jest.mock(paymentService);
-  await checkout(cart, payment);
-  expect(mockPayment.process).toHaveBeenCalledWith(cart.total);
-});
+```rust
+// BAD: Tests that a specific internal method was called
+#[test]
+fn test_postprocess_calls_non_max_suppression() {
+    // Testing private method ordering, not behavior
+}
+
+// BAD: Reaching into private state
+#[test]
+fn test_tracker_internal_counter_value() {
+    let tracker = CatTracker::new(config);
+    tracker.update(true);
+    assert_eq!(tracker.detection_count, 1); // Testing internals!
+}
 ```
 
 Red flags:
 
-- Mocking internal collaborators
-- Testing private methods
-- Asserting on call counts/order
+- Testing private methods or fields
 - Test breaks when refactoring without behavior change
 - Test name describes HOW not WHAT
-- Verifying through external means instead of interface
+- Asserting on internal counters/state instead of observable output
 
-```typescript
+```rust
 // BAD: Bypasses interface to verify
-test("createUser saves to database", async () => {
-  await createUser({ name: "Alice" });
-  const row = await db.query("SELECT * FROM users WHERE name = ?", ["Alice"]);
-  expect(row).toBeDefined();
-});
+#[tokio::test]
+async fn test_storage_writes_to_disk() {
+    storage.save_image(&img, ImageType::Entry, timestamp).await.unwrap();
+    assert!(std::fs::read_dir(dir).unwrap().count() > 0); // Checking fs directly
+}
 
 // GOOD: Verifies through interface
-test("createUser makes user retrievable", async () => {
-  const user = await createUser({ name: "Alice" });
-  const retrieved = await getUser(user.id);
-  expect(retrieved.name).toBe("Alice");
-});
+#[tokio::test]
+async fn test_saved_image_has_correct_metadata() {
+    let result = storage.save_image(&img, ImageType::Entry, timestamp).await.unwrap();
+    assert_eq!(result.image_type, ImageType::Entry);
+    assert!(result.path.exists());
+}
 ```

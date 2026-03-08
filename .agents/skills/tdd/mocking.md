@@ -1,59 +1,52 @@
 # When to Mock
 
-Mock at **system boundaries** only:
+## Trait-Based Mocking
 
-- External APIs (payment, email, etc.)
-- Databases (sometimes - prefer test DB)
-- Time/randomness
-- File system (sometimes)
+This project uses **trait-based dependency injection**. Mock at trait boundaries:
 
-Don't mock:
+- `CameraCapture` → `MockCamera`, `StubCamera`
+- `CatDetector` → `MockDetector`
+- `ImageStorage` → `MockStorage`
+- `Notifier` → `MockNotifier`
 
-- Your own classes/modules
-- Internal collaborators
-- Anything you control
+These are system boundaries — each trait abstracts over hardware (camera), ML runtime (ONNX), filesystem (storage), or external processes (signal-cli).
 
-## Designing for Mockability
+## When to Mock
 
-At system boundaries, design interfaces that are easy to mock:
+- External hardware: camera via `MockCamera`
+- ML inference: detector via `MockDetector`
+- Filesystem operations: storage via `MockStorage`
+- External processes: notifier via `MockNotifier`
+- Time: use fixed timestamps in tests
 
-**1. Use dependency injection**
+## When NOT to Mock
 
-Pass external dependencies in rather than creating them internally:
+- `CatTracker` — pure logic, test directly with real inputs
+- `Config` — parse real TOML strings, don't mock
+- Postprocessing (NMS, bbox scaling) — pure functions, test with real data
+- Anything that's fast and deterministic
 
-```typescript
-// Easy to mock
-function processPayment(order, paymentClient) {
-  return paymentClient.charge(order.total);
+## Mock Conventions
+
+Place `Mock*` structs in the same file as the trait, inside `#[cfg(test)]`:
+
+```rust
+#[cfg(test)]
+pub struct MockStorage {
+    saved: std::sync::Mutex<Vec<SavedImage>>,
+    should_fail: bool,
 }
 
-// Hard to mock
-function processPayment(order) {
-  const client = new StripeClient(process.env.STRIPE_KEY);
-  return client.charge(order.total);
+#[cfg(test)]
+#[async_trait]
+impl ImageStorage for MockStorage {
+    async fn save_image(&self, ...) -> Result<SavedImage, StorageError> {
+        if self.should_fail {
+            return Err(StorageError::WriteError("mock failure".into()));
+        }
+        // Record the call and return success
+    }
 }
 ```
 
-**2. Prefer SDK-style interfaces over generic fetchers**
-
-Create specific functions for each external operation instead of one generic function with conditional logic:
-
-```typescript
-// GOOD: Each function is independently mockable
-const api = {
-  getUser: (id) => fetch(`/users/${id}`),
-  getOrders: (userId) => fetch(`/users/${userId}/orders`),
-  createOrder: (data) => fetch('/orders', { method: 'POST', body: data }),
-};
-
-// BAD: Mocking requires conditional logic inside the mock
-const api = {
-  fetch: (endpoint, options) => fetch(endpoint, options),
-};
-```
-
-The SDK approach means:
-- Each mock returns one specific shape
-- No conditional logic in test setup
-- Easier to see which endpoints a test exercises
-- Type safety per endpoint
+Keep mocks minimal — only implement what tests need.
