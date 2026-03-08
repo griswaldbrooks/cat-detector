@@ -3,5 +3,5 @@ set -euo pipefail
 
 TARGET="${1:-catbox}"
 
-ssh "$TARGET" "pkill -f cat-detector || true"
+ssh "$TARGET" "pkill -f 'cat-detector run' || true"
 echo "Stopped cat-detector on $TARGET"

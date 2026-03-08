@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TARGET="${1:-catbox}"
-REMOTE_DIR="/opt/cat-detector"
+REMOTE_DIR="cat-detector"
 
 ssh "$TARGET" "cd $REMOTE_DIR && \
     ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so \
