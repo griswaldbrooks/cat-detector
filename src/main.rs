@@ -275,6 +275,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         notifier::SignalNotifier::new(
             signal_path,
             recipient,
+            config.notification.account.clone(),
             config.notification.notify_on_enter,
             config.notification.notify_on_exit,
             config.notification.send_video,
@@ -597,6 +598,7 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
     let notif = notifier::SignalNotifier::new(
         signal_path,
         recipient,
+        config.notification.account.clone(),
         true,
         true,
         config.notification.send_video,

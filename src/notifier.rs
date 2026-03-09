@@ -81,6 +81,7 @@ const SIGNAL_CLI_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct SignalNotifier {
     signal_cli_path: PathBuf,
     recipient: String,
+    account: Option<String>,
     enabled: bool,
     notify_on_enter: bool,
     notify_on_exit: bool,
@@ -125,6 +126,7 @@ impl SignalNotifier {
     pub fn new(
         signal_cli_path: PathBuf,
         recipient: String,
+        account: Option<String>,
         notify_on_enter: bool,
         notify_on_exit: bool,
         send_video: bool,
@@ -134,6 +136,7 @@ impl SignalNotifier {
         Ok(Self {
             signal_cli_path,
             recipient,
+            account,
             enabled: true,
             notify_on_enter,
             notify_on_exit,
@@ -147,6 +150,7 @@ impl SignalNotifier {
         Self {
             signal_cli_path: PathBuf::new(),
             recipient: String::new(),
+            account: None,
             enabled: false,
             notify_on_enter: false,
             notify_on_exit: false,
@@ -211,18 +215,26 @@ impl SignalNotifier {
             None
         };
 
-        let mut args = vec![
+        let mut args = Vec::new();
+
+        if let Some(ref account) = self.account {
+            args.push("-a".to_string());
+            args.push(account.clone());
+        }
+
+        args.extend([
             "send".to_string(),
             "-m".to_string(),
             message,
-        ];
+        ]);
+
+        // Recipient must come before --attachment (signal-cli native parsing quirk)
+        args.push(self.recipient.clone());
 
         if let Some(ref attachment_path) = video_attachment {
             args.push("--attachment".to_string());
             args.push(attachment_path.to_string_lossy().to_string());
         }
-
-        args.push(self.recipient.clone());
 
         let timeout = if video_attachment.is_some() {
             self.attachment_timeout
@@ -499,6 +511,7 @@ mod tests {
         let notifier = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "+1234567890".to_string(),
+            None,
             true,
             false,
             true,
@@ -548,6 +561,7 @@ mod tests {
         let notifier = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "+1234567890".to_string(),
+            None,
             true,
             true,
             true,
@@ -577,6 +591,7 @@ mod tests {
         let notifier = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "+1234567890".to_string(),
+            None,
             true,
             true,
             true,
@@ -598,10 +613,11 @@ mod tests {
         // Should have --attachment <path>
         let att_idx = args.iter().position(|a| a == "--attachment").unwrap();
         assert_eq!(args[att_idx + 1], video_path.to_string_lossy());
+        // Recipient comes before --attachment (signal-cli native parsing quirk)
+        let recip_idx = args.iter().position(|a| a == "+1234567890").unwrap();
+        assert!(recip_idx < att_idx);
         // Attachment timeout
         assert_eq!(timeout, Duration::from_secs(120));
-        // Recipient is still last
-        assert_eq!(args.last().unwrap(), "+1234567890");
     }
 
     #[test]
@@ -609,6 +625,7 @@ mod tests {
         let notifier = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "+1234567890".to_string(),
+            None,
             true,
             true,
             false, // send_video = false
@@ -630,10 +647,34 @@ mod tests {
     }
 
     #[test]
+    fn test_build_send_args_with_account_includes_account_flag() {
+        let notifier = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "+1234567890".to_string(),
+            Some("+9876543210".to_string()),
+            true,
+            true,
+            true,
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        let event = NotificationEvent::CatEntered {
+            timestamp: Utc::now(),
+        };
+        let (args, _timeout) = notifier.build_send_args(&event);
+
+        assert_eq!(args[0], "-a");
+        assert_eq!(args[1], "+9876543210");
+        assert_eq!(args[2], "send");
+    }
+
+    #[test]
     fn test_build_send_args_missing_video_falls_back_to_text() {
         let notifier = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "+1234567890".to_string(),
+            None,
             true,
             true,
             true,
@@ -666,6 +707,7 @@ mod tests {
         let notifier = SignalNotifier::new(
             PathBuf::from(&cli_path),
             recipient,
+            None,
             true,
             true,
             true,
@@ -693,6 +735,7 @@ mod tests {
         let result = SignalNotifier::new(
             PathBuf::from("/usr/bin/signal-cli"),
             "not-valid".to_string(),
+            None,
             true,
             true,
             true,

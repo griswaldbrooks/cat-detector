@@ -141,6 +141,8 @@ pub struct NotificationConfig {
     pub enabled: bool,
     pub signal_cli_path: Option<PathBuf>,
     pub recipient: Option<String>,
+    /// Signal account phone number (required for linked devices, e.g. "+13476383633")
+    pub account: Option<String>,
     #[serde(default)]
     pub notify_on_enter: bool,
     #[serde(default)]
@@ -165,6 +167,7 @@ impl Default for NotificationConfig {
             enabled: false,
             signal_cli_path: None,
             recipient: None,
+            account: None,
             notify_on_enter: true,
             notify_on_exit: true,
             send_video: default_send_video(),

@@ -44,6 +44,8 @@ enabled = false
 # signal_cli_path = "/usr/local/bin/signal-cli"
 # Phone number to send notifications to (required if enabled)
 # recipient = "+1234567890"
+# Signal account phone number (required for linked devices)
+# account = "+1234567890"
 # Send notification when cat enters
 notify_on_enter = true
 # Send notification when cat exits
