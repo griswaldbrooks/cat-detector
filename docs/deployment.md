@@ -25,6 +25,9 @@ Install on the **target machine**:
 On the **build machine** (or target if building locally):
 
 ```bash
+# Build dependency for V4L2 camera support
+sudo apt install libv4l-dev
+
 cargo build --release --features real-camera,web
 ```
 

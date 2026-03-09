@@ -1,5 +1,7 @@
 # Cat Detector
 
+[![CI](https://github.com/griswaldbrooks/cat-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/griswaldbrooks/cat-detector/actions/workflows/ci.yml)
+
 A Rust application that monitors a USB webcam for cats using YOLOv8 machine learning model. When a cat is detected, it logs images and can send notifications via Signal.
 
 ## Features
