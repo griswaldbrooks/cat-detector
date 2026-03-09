@@ -188,6 +188,51 @@ impl SignalNotifier {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    /// Build the signal-cli send arguments and select the appropriate timeout.
+    /// Returns (args, timeout).
+    fn build_send_args(&self, event: &NotificationEvent) -> (Vec<String>, Duration) {
+        let message = event.format_message();
+
+        let video_attachment = if self.send_video {
+            if let NotificationEvent::CatExited {
+                video_path: Some(ref path),
+                ..
+            } = event
+            {
+                if path.exists() {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut args = vec![
+            "send".to_string(),
+            "-m".to_string(),
+            message,
+        ];
+
+        if let Some(ref attachment_path) = video_attachment {
+            args.push("--attachment".to_string());
+            args.push(attachment_path.to_string_lossy().to_string());
+        }
+
+        args.push(self.recipient.clone());
+
+        let timeout = if video_attachment.is_some() {
+            self.attachment_timeout
+        } else {
+            self.timeout
+        };
+
+        (args, timeout)
+    }
+
     fn should_notify(&self, event: &NotificationEvent) -> bool {
         if !self.enabled {
             return false;
@@ -213,44 +258,14 @@ impl Notifier for SignalNotifier {
             )));
         }
 
-        let message = event.format_message();
+        let (args, timeout) = self.build_send_args(&event);
 
-        // Check if we should attach a video file
-        let video_attachment = if self.send_video {
-            if let NotificationEvent::CatExited {
-                video_path: Some(ref path),
-                ..
-            } = event
-            {
-                if path.exists() {
-                    Some(path.clone())
-                } else {
-                    tracing::warn!("Video file not found for attachment: {:?}", path);
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let mut command = tokio::process::Command::new(&self.signal_cli_path);
-        command.args(["send", "-m", &message]);
-
-        if let Some(ref attachment_path) = video_attachment {
-            command.args(["--attachment", &attachment_path.to_string_lossy()]);
-        }
-
-        command.arg(&self.recipient);
-
-        let timeout = if video_attachment.is_some() {
-            self.attachment_timeout
-        } else {
-            self.timeout
-        };
-
-        let output = tokio::time::timeout(timeout, command.output())
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new(&self.signal_cli_path)
+                .args(&args)
+                .output(),
+        )
             .await
             .map_err(|_| NotifierError::Timeout(timeout.as_secs()))?
             .map_err(|e| NotifierError::SendError(e.to_string()))?;
@@ -526,6 +541,115 @@ mod tests {
         assert!(validate_recipient("not-a-number").is_err());
         assert!(validate_recipient("+").is_err());
         assert!(validate_recipient("+abc").is_err());
+    }
+
+    #[test]
+    fn test_build_send_args_enter_event_text_only() {
+        let notifier = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "+1234567890".to_string(),
+            true,
+            true,
+            true,
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        let event = NotificationEvent::CatEntered {
+            timestamp: Utc::now(),
+        };
+        let (args, timeout) = notifier.build_send_args(&event);
+
+        assert_eq!(args[0], "send");
+        assert_eq!(args[1], "-m");
+        // args[2] is the message text
+        assert!(args[2].contains("Cat detected"));
+        // No --attachment args
+        assert!(!args.iter().any(|a| a == "--attachment"));
+        // Last arg is recipient
+        assert_eq!(args.last().unwrap(), "+1234567890");
+        // Text-only timeout
+        assert_eq!(timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_build_send_args_exit_with_video_includes_attachment() {
+        let notifier = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "+1234567890".to_string(),
+            true,
+            true,
+            true,
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        // Create a real temp file so path.exists() returns true
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let video_path = tmp.path().to_path_buf();
+
+        let event = NotificationEvent::CatExited {
+            timestamp: Utc::now(),
+            duration_secs: 60,
+            video_path: Some(video_path.clone()),
+        };
+        let (args, timeout) = notifier.build_send_args(&event);
+
+        // Should have --attachment <path>
+        let att_idx = args.iter().position(|a| a == "--attachment").unwrap();
+        assert_eq!(args[att_idx + 1], video_path.to_string_lossy());
+        // Attachment timeout
+        assert_eq!(timeout, Duration::from_secs(120));
+        // Recipient is still last
+        assert_eq!(args.last().unwrap(), "+1234567890");
+    }
+
+    #[test]
+    fn test_build_send_args_send_video_false_skips_attachment() {
+        let notifier = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "+1234567890".to_string(),
+            true,
+            true,
+            false, // send_video = false
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+
+        let event = NotificationEvent::CatExited {
+            timestamp: Utc::now(),
+            duration_secs: 60,
+            video_path: Some(tmp.path().to_path_buf()),
+        };
+        let (args, timeout) = notifier.build_send_args(&event);
+
+        assert!(!args.iter().any(|a| a == "--attachment"));
+        assert_eq!(timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_build_send_args_missing_video_falls_back_to_text() {
+        let notifier = SignalNotifier::new(
+            PathBuf::from("/usr/bin/signal-cli"),
+            "+1234567890".to_string(),
+            true,
+            true,
+            true,
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        let event = NotificationEvent::CatExited {
+            timestamp: Utc::now(),
+            duration_secs: 60,
+            video_path: Some(PathBuf::from("/nonexistent/video.mp4")),
+        };
+        let (args, timeout) = notifier.build_send_args(&event);
+
+        assert!(!args.iter().any(|a| a == "--attachment"));
+        assert_eq!(timeout, Duration::from_secs(30));
     }
 
     #[test]
