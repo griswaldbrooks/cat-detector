@@ -55,6 +55,7 @@ anyhow = "1"
 
 # Async traits
 async-trait = "0.1"
+chrono-tz = "0.10.4"
 
 [dev-dependencies]
 mockall = "0.13"

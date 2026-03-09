@@ -151,6 +151,9 @@ pub struct NotificationConfig {
     pub send_video: bool,
     #[serde(default = "default_attachment_timeout_secs")]
     pub attachment_timeout_secs: u64,
+    /// IANA timezone for notification timestamps (e.g. "America/New_York")
+    /// Defaults to UTC if not set
+    pub timezone: Option<String>,
 }
 
 fn default_send_video() -> bool {
@@ -172,6 +175,7 @@ impl Default for NotificationConfig {
             notify_on_exit: true,
             send_video: default_send_video(),
             attachment_timeout_secs: default_attachment_timeout_secs(),
+            timezone: None,
         }
     }
 }

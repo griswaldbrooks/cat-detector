@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
@@ -32,12 +33,12 @@ pub enum NotificationEvent {
 }
 
 impl NotificationEvent {
-    pub fn format_message(&self) -> String {
+    pub fn format_message(&self, timezone: Option<Tz>) -> String {
         match self {
             NotificationEvent::CatEntered { timestamp } => {
                 format!(
                     "🐱 Cat detected! Entered at {}",
-                    timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                    format_timestamp(timestamp, timezone)
                 )
             }
             NotificationEvent::CatExited {
@@ -48,11 +49,21 @@ impl NotificationEvent {
                 let duration = format_duration(*duration_secs);
                 format!(
                     "🐱 Cat left at {}. Visit duration: {}",
-                    timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+                    format_timestamp(timestamp, timezone),
                     duration
                 )
             }
         }
+    }
+}
+
+fn format_timestamp(timestamp: &DateTime<Utc>, timezone: Option<Tz>) -> String {
+    match timezone {
+        Some(tz) => {
+            let local = timestamp.with_timezone(&tz);
+            format!("{} {}", local.format("%Y-%m-%d %H:%M:%S"), tz)
+        }
+        None => format!("{}", timestamp.format("%Y-%m-%d %H:%M:%S UTC")),
     }
 }
 
@@ -88,6 +99,14 @@ pub struct SignalNotifier {
     timeout: Duration,
     send_video: bool,
     attachment_timeout: Duration,
+    timezone: Option<Tz>,
+}
+
+/// Parse an IANA timezone string (e.g. "America/New_York") into a Tz.
+pub fn parse_timezone(tz_str: &str) -> Result<Tz, NotifierError> {
+    tz_str
+        .parse::<Tz>()
+        .map_err(|e| NotifierError::SendError(format!("Invalid timezone '{}': {}", tz_str, e)))
 }
 
 /// Validate that a recipient looks like a phone number or signal group ID.
@@ -123,6 +142,7 @@ fn validate_recipient(recipient: &str) -> Result<(), NotifierError> {
 }
 
 impl SignalNotifier {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         signal_cli_path: PathBuf,
         recipient: String,
@@ -131,6 +151,7 @@ impl SignalNotifier {
         notify_on_exit: bool,
         send_video: bool,
         attachment_timeout: Duration,
+        timezone: Option<Tz>,
     ) -> Result<Self, NotifierError> {
         validate_recipient(&recipient)?;
         Ok(Self {
@@ -143,6 +164,7 @@ impl SignalNotifier {
             timeout: SIGNAL_CLI_TIMEOUT,
             send_video,
             attachment_timeout,
+            timezone,
         })
     }
 
@@ -157,6 +179,7 @@ impl SignalNotifier {
             timeout: SIGNAL_CLI_TIMEOUT,
             send_video: false,
             attachment_timeout: Duration::from_secs(120),
+            timezone: None,
         }
     }
 
@@ -195,7 +218,7 @@ impl SignalNotifier {
     /// Build the signal-cli send arguments and select the appropriate timeout.
     /// Returns (args, timeout).
     fn build_send_args(&self, event: &NotificationEvent) -> (Vec<String>, Duration) {
-        let message = event.format_message();
+        let message = event.format_message(self.timezone);
 
         let video_attachment = if self.send_video {
             if let NotificationEvent::CatExited {
@@ -465,16 +488,47 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_message_format() {
+    fn test_enter_message_format_utc() {
         let timestamp = DateTime::parse_from_rfc3339("2024-01-15T10:30:45Z")
             .unwrap()
             .with_timezone(&Utc);
 
         let event = NotificationEvent::CatEntered { timestamp };
-        let message = event.format_message();
+        let message = event.format_message(None);
 
         assert!(message.contains("Cat detected"));
         assert!(message.contains("2024-01-15 10:30:45 UTC"));
+    }
+
+    #[test]
+    fn test_enter_message_format_with_timezone() {
+        let timestamp = DateTime::parse_from_rfc3339("2024-01-15T10:30:45Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let event = NotificationEvent::CatEntered { timestamp };
+        let message = event.format_message(Some(tz));
+
+        assert!(message.contains("Cat detected"));
+        // 10:30 UTC = 05:30 EST (January, no DST)
+        assert!(message.contains("2024-01-15 05:30:45"));
+        assert!(message.contains("America/New_York"));
+    }
+
+    #[test]
+    fn test_enter_message_format_with_dst_timezone() {
+        // July = EDT (UTC-4)
+        let timestamp = DateTime::parse_from_rfc3339("2024-07-15T10:30:45Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let event = NotificationEvent::CatEntered { timestamp };
+        let message = event.format_message(Some(tz));
+
+        // 10:30 UTC = 06:30 EDT
+        assert!(message.contains("2024-07-15 06:30:45"));
     }
 
     #[test]
@@ -488,7 +542,7 @@ mod tests {
             duration_secs: 3725, // 1h 2m 5s
             video_path: None,
         };
-        let message = event.format_message();
+        let message = event.format_message(None);
 
         assert!(message.contains("Cat left"));
         assert!(message.contains("1h 2m 5s"));
@@ -512,6 +566,7 @@ mod tests {
             false,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -562,6 +617,7 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -592,6 +648,7 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -626,6 +683,7 @@ mod tests {
             true,
             false, // send_video = false
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -652,6 +710,7 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -675,6 +734,7 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -708,6 +768,7 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         )
         .unwrap();
 
@@ -739,7 +800,23 @@ mod tests {
             true,
             true,
             Duration::from_secs(120),
+            None,
         );
         assert!(matches!(result, Err(NotifierError::InvalidRecipient(_))));
+    }
+
+    #[test]
+    fn test_parse_timezone_valid() {
+        assert!(parse_timezone("America/New_York").is_ok());
+        assert!(parse_timezone("Europe/London").is_ok());
+        assert!(parse_timezone("Asia/Tokyo").is_ok());
+        assert!(parse_timezone("UTC").is_ok());
+    }
+
+    #[test]
+    fn test_parse_timezone_invalid() {
+        assert!(parse_timezone("Not/A/Timezone").is_err());
+        assert!(parse_timezone("Fake/City").is_err());
+        assert!(parse_timezone("").is_err());
     }
 }

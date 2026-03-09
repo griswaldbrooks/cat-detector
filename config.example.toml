@@ -54,6 +54,9 @@ notify_on_exit = true
 send_video = true
 # Timeout in seconds for sending attachments (videos can be large)
 attachment_timeout_secs = 120
+# IANA timezone for notification timestamps (e.g. "America/New_York", "Europe/London")
+# Defaults to UTC if not set
+# timezone = "America/New_York"
 
 [tracking]
 # How often to save sample images while cat is present (seconds)

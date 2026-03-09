@@ -251,6 +251,14 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             .clone()
             .expect("Recipient required when notifications enabled");
 
+        let timezone = config
+            .notification
+            .timezone
+            .as_deref()
+            .map(notifier::parse_timezone)
+            .transpose()
+            .context("Invalid timezone in config")?;
+
         notifier::SignalNotifier::new(
             signal_path,
             recipient,
@@ -259,6 +267,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             config.notification.notify_on_exit,
             config.notification.send_video,
             std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
+            timezone,
         )?
     } else {
         notifier::SignalNotifier::disabled()
@@ -574,6 +583,14 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
         .clone()
         .expect("Recipient required when notifications enabled");
 
+    let timezone = config
+        .notification
+        .timezone
+        .as_deref()
+        .map(notifier::parse_timezone)
+        .transpose()
+        .context("Invalid timezone in config")?;
+
     let notif = notifier::SignalNotifier::new(
         signal_path,
         recipient,
@@ -582,6 +599,7 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
         true,
         config.notification.send_video,
         std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
+        timezone,
     )?;
 
     // Verify signal-cli is installed
