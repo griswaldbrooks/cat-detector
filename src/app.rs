@@ -18,6 +18,12 @@ pub struct DiagnosticStats {
     pub detection_errors: u64,
 }
 
+impl Default for DiagnosticStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiagnosticStats {
     pub fn new() -> Self {
         Self {

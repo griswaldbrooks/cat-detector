@@ -98,9 +98,8 @@ fn validate_recipient(recipient: &str) -> Result<(), NotifierError> {
             "empty recipient".to_string(),
         ));
     }
-    if r.starts_with('+') {
+    if let Some(rest) = r.strip_prefix('+') {
         // Phone number: must be digits (and optional dots/dashes) after the +
-        let rest = &r[1..];
         if rest.is_empty()
             || !rest
                 .chars()
