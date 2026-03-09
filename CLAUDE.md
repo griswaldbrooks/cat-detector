@@ -33,7 +33,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `detector.rs` | `CatDetector` trait + ClipDetector (zero-shot) / OnnxDetector (YOLO11/YOLOX) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
-| `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli) |
+| `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli, video attachments, linked device support) |
 | `recorder.rs` | `VideoRecorder` trait + FfmpegRecorder (pipes raw frames to ffmpeg) |
 | `session.rs` | `CatSession` model + `SessionManager` (JSON persistence) |
 | `service.rs` | Systemd service install/uninstall |
@@ -49,7 +49,9 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records with wallclock timestamps for real-time playback
-- **Tests**: 92 unit + 9 integration; all traits have Mock* implementations
+- **Signal notifications**: signal-cli with linked device support (`-a` account flag), video attachments on exit, `test-notification` CLI command
+- **Tests**: 87 unit + 1 ignored + 9 integration; all traits have Mock* implementations
+- **Deployment guide**: `docs/deployment.md` — full setup including permissions, signal-cli, systemd
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 - **Python scripts**: managed via [pixi](https://pixi.sh) (`pixi run test-clip`, `pixi run -e clip generate-embeddings`)
 
