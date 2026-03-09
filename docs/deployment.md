@@ -55,9 +55,8 @@ Default model is CLIP ViT-B/32 (recommended for overhead camera angles). Models 
 
 | Model | Size | Input | Use Case |
 |-------|------|-------|----------|
-| `clip_vitb32_image.onnx` | 352 MB | 224x224 | Zero-shot classification (recommended) |
-| `clip_text_embeddings.bin` | 6 KB | — | Required with CLIP model |
-| `yolo11n.onnx` | 11 MB | 640x640 | Object detection, side-angle views |
+| `clip_vitb32_image.onnx` | 352 MB | 224x224 | Zero-shot cat/room/person classification |
+| `clip_text_embeddings.bin` | 6 KB | — | Pre-computed text embeddings (tracked in repo) |
 
 Models go in `models/` relative to the working directory.
 

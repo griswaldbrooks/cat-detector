@@ -44,7 +44,7 @@ cp /tmp/catbox-batch-$i.jpg test_images/<name>$i.jpg
 2. Copy to catbox and run detection:
 ```bash
 scp test_images/<name>.jpg catbox:/tmp/<name>.jpg
-ssh catbox "cd ~/cat-detector && ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./cat-detector test-image /tmp/<name>.jpg --model models/yolo11n.onnx --threshold 0.1"
+ssh catbox "cd ~/cat-detector && ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./cat-detector test-image /tmp/<name>.jpg --model models/clip_vitb32_image.onnx --threshold 0.1"
 ```
 
 ## Notes

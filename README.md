@@ -2,14 +2,16 @@
 
 [![CI](https://github.com/griswaldbrooks/cat-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/griswaldbrooks/cat-detector/actions/workflows/ci.yml)
 
-A Rust application that monitors a USB webcam for cats using YOLOv8 machine learning model. When a cat is detected, it logs images and can send notifications via Signal.
+A Rust application that monitors a USB webcam for cats using CLIP ViT-B/32 zero-shot classification. Saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream.
 
 ## Features
 
-- Real-time cat detection using YOLOv8-nano (optimized for CPU)
+- Real-time cat detection using CLIP ViT-B/32 (zero-shot, ~21ms on CPU)
 - Hysteresis-based tracking to avoid false triggers
 - Automatic image capture on cat entry/exit and periodic samples
-- Signal messenger notifications
+- Video recording of cat visits (FFmpeg H.264 MP4)
+- Signal messenger notifications with video attachments
+- Web dashboard with live MJPEG stream and session browsing
 - Runs as a CLI daemon or systemd service
 - Fully configurable via TOML
 
@@ -17,63 +19,49 @@ A Rust application that monitors a USB webcam for cats using YOLOv8 machine lear
 
 - Linux (tested on Ubuntu 22.04+)
 - USB webcam (V4L2 compatible)
-- Rust 1.70+ (for building)
+- Rust 1.92+ (for building)
+- ONNX Runtime 1.23.2
+- FFmpeg (for video recording)
 
 ## Quick Start
 
-### 1. Build the Application
+### 1. Install Build Dependencies
 
 ```bash
-cargo build --release
+sudo apt install libv4l-dev ffmpeg
 ```
 
-### 2. Download and Convert the YOLOv8 Model
-
-Ultralytics provides PyTorch models that need to be converted to ONNX format.
-
-**Option A: Convert using Python (recommended)**
+### 2. Build
 
 ```bash
-# Install ultralytics
-pip install ultralytics
-
-# Download and convert to ONNX
-python -c "
-from ultralytics import YOLO
-model = YOLO('yolov8n.pt')  # Downloads automatically
-model.export(format='onnx', imgsz=640)
-"
-
-# Move to models directory
-mkdir -p models
-mv yolov8n.onnx models/
+cargo build --release --features real-camera,web
 ```
 
-**Option B: Download pre-converted from Hugging Face**
+### 3. Set Up ONNX Runtime
 
-Some community members provide pre-converted ONNX models:
+Download from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases/tag/v1.23.2):
 
 ```bash
-mkdir -p models
-# Check https://huggingface.co/models?search=yolov8+onnx for available conversions
+curl -L -o ort.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz
+tar xzf ort.tgz && mv onnxruntime-linux-x64-1.23.2 onnxruntime && rm ort.tgz
 ```
 
-**Note:** The PyTorch model is available at:
+### 4. Set Up Models
+
+The CLIP text embeddings are tracked in the repo. Download the CLIP image encoder:
+
 ```bash
-curl -L -o yolov8n.pt https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
+# Download CLIP ViT-B/32 image encoder from HuggingFace
+# Place at models/clip_vitb32_image.onnx
 ```
 
-### 3. Create Configuration
+### 5. Configure and Run
 
 ```bash
 cp config.example.toml config.toml
 # Edit config.toml with your settings
-```
 
-### 4. Run
-
-```bash
-./target/release/cat-detector run --config config.toml
+ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector run --config config.toml
 ```
 
 ## Configuration
@@ -82,148 +70,57 @@ See `config.example.toml` for all available options. Key settings:
 
 | Section | Option | Description |
 |---------|--------|-------------|
-| camera | device_path | Webcam device (e.g., /dev/video0) |
-| detector | model_path | Path to YOLOv8 ONNX model |
+| camera | device_path | Webcam device (`"auto"` to auto-detect) |
+| detector | model_path | Path to CLIP ONNX model |
 | detector | confidence_threshold | Detection confidence (0.0-1.0) |
 | storage | output_dir | Where to save captured images |
 | notification | enabled | Enable Signal notifications |
 | notification | recipient | Phone number for notifications |
-| tracking | sample_interval_secs | How often to capture while cat present |
 | tracking | enter_threshold | Detections needed to confirm entry |
 | tracking | exit_threshold | Non-detections needed to confirm exit |
 
-## Signal Notifications Setup
+## Web Dashboard
 
-To enable Signal notifications:
+When built with the `web` feature, serves a dashboard at `http://localhost:8080`:
 
-### 1. Install signal-cli
-
-```bash
-# Download latest release from https://github.com/AsamK/signal-cli/releases
-wget https://github.com/AsamK/signal-cli/releases/download/v0.13.2/signal-cli-0.13.2-Linux.tar.gz
-tar xf signal-cli-0.13.2-Linux.tar.gz
-sudo mv signal-cli-0.13.2 /opt/signal-cli
-sudo ln -s /opt/signal-cli/bin/signal-cli /usr/local/bin/signal-cli
-```
-
-### 2. Register Your Phone Number
-
-```bash
-signal-cli -u +1YOURPHONENUMBER register
-# You'll receive an SMS with a verification code
-signal-cli -u +1YOURPHONENUMBER verify CODE
-```
-
-### 3. Configure cat-detector
-
-Edit `config.toml`:
-
-```toml
-[notification]
-enabled = true
-recipient = "+1RECIPIENTPHONENUMBER"
-notify_on_enter = true
-notify_on_exit = true
-```
-
-## Systemd Service
-
-### Install as Service
-
-```bash
-sudo ./target/release/cat-detector install-service --config /path/to/config.toml
-```
-
-### Manage Service
-
-```bash
-# Start
-sudo systemctl start cat-detector
-
-# Stop
-sudo systemctl stop cat-detector
-
-# View logs
-journalctl -u cat-detector -f
-
-# Check status
-./target/release/cat-detector status
-```
-
-### Uninstall Service
-
-```bash
-sudo ./target/release/cat-detector uninstall-service
-```
+- `/` -- Live MJPEG stream with detection overlay and system info
+- `/sessions` -- Browse cat visit sessions with images and video
+- `/captures/:filename` -- Direct image/video access
+- `/api/system-info` -- JSON system info
 
 ## CLI Commands
 
 ```
-cat-detector run              Run the detector daemon
-cat-detector install-service  Install as systemd service
-cat-detector uninstall-service Remove systemd service
-cat-detector start            Start the systemd service
-cat-detector stop             Stop the systemd service
-cat-detector status           Show service status
+cat-detector run                Run the detector daemon
+cat-detector test-image IMAGE   Test detection on an image file
+cat-detector test-camera        Capture and detect from camera
+cat-detector test-notification  Send a test Signal notification
+cat-detector install-service    Install as systemd service
+cat-detector uninstall-service  Remove systemd service
+cat-detector status             Show service status
 ```
 
-## Image Storage
+## Detection Model
 
-Captured images are saved to the configured `output_dir` with the following naming convention:
-
-- `cat_entry_YYYYMMDD_HHMMSS.XXX.jpg` - When cat enters
-- `cat_exit_YYYYMMDD_HHMMSS.XXX.jpg` - When cat leaves
-- `cat_sample_YYYYMMDD_HHMMSS.XXX.jpg` - Periodic samples while cat present
-
-## Hysteresis Tracking
-
-To avoid false triggers from brief detections or momentary losses:
-
-- **Entry**: Requires `enter_threshold` consecutive detections (default: 3)
-- **Exit**: Requires `exit_threshold` consecutive non-detections (default: 5)
-
-This means a cat must be visible for ~1.5 seconds before triggering entry, and must be gone for ~2.5 seconds before triggering exit.
-
-## Troubleshooting
-
-### Camera not found
-
-Check your camera is connected and accessible:
-
-```bash
-ls -la /dev/video*
-v4l2-ctl --list-devices
-```
-
-### Model not loading
-
-Ensure the ONNX model file exists and is readable:
-
-```bash
-ls -la models/yolov8n.onnx
-```
-
-### Signal notifications not working
-
-Test signal-cli directly:
-
-```bash
-signal-cli -u +YOURNUM send -m "Test" +RECIPIENTNUM
-```
+Uses CLIP ViT-B/32 for zero-shot classification with three text prompts: "a photo of a cat", "a photo of an empty room", and "a photo of a person". This approach was chosen over YOLO object detection models after benchmarking showed CLIP achieves 100% detection accuracy on overhead views while YOLO models maxed out at ~23%. See [`docs/model-evaluation.md`](docs/model-evaluation.md) for the full comparison.
 
 ## Development
 
-### Running Tests
-
 ```bash
-cargo test
+# Unit tests (no external deps)
+cargo test --lib
+
+# Integration tests (needs CLIP model + ORT runtime)
+ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test clip_integration_test
+
+# Lint
+cargo clippy --all-features -- -D warnings
+cargo fmt --check
 ```
 
-### Running with Debug Logging
+## Deployment
 
-```bash
-RUST_LOG=debug cargo run -- run --config config.toml
-```
+See [`docs/deployment.md`](docs/deployment.md) for the full deployment guide including systemd setup, signal-cli configuration, and permissions.
 
 ## License
 

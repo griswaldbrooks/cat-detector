@@ -30,7 +30,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `app.rs` | Generic `App<C,D,S,N>` orchestrating the detection loop |
 | `config.rs` | TOML config parsing with defaults and validation |
 | `camera.rs` | `CameraCapture` trait + V4L2Camera (auto-detect) / StubCamera |
-| `detector.rs` | `CatDetector` trait + ClipDetector (zero-shot) / OnnxDetector (YOLO11/YOLOX) |
+| `detector.rs` | `CatDetector` trait + ClipDetector (zero-shot classification) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
 | `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli, video attachments, linked device support) |
@@ -42,7 +42,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 
 ## Key Details
 
-- **Model**: CLIP ViT-B/32 (default, zero-shot, 224x224, 3-class: cat/room/person) or YOLO11n (640x640). Cat = COCO class 15. Also supports YOLOX via `ModelFormat` auto-detection
+- **Model**: CLIP ViT-B/32 (zero-shot, 224x224, 3-class: cat/room/person). Cat = COCO class 15. See `docs/model-evaluation.md` for historical comparison with YOLO models
 - **ONNX Runtime**: loaded dynamically via `ORT_DYLIB_PATH` env var
 - **Cargo features**: `real-camera` (v4l2), `web` (axum)
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`

@@ -15,9 +15,9 @@ globs:
 - Use `#[tokio::test]` for async tests
 
 ## Integration Tests
-- Located in `tests/integration_test.rs`
-- Require ONNX model file and runtime: `ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test integration_test`
-- Test real OnnxDetector with actual model inference
+- Located in `tests/clip_integration_test.rs`
+- Require CLIP model, text embeddings, and ORT runtime: `ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test clip_integration_test`
+- Test real ClipDetector with actual model inference
 
 ## Naming Convention
 - `test_<what>_<condition>_<expected>`

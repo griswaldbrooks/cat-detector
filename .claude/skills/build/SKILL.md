@@ -36,4 +36,4 @@ cargo fmt --check
 ## Notes
 - The `real-camera` feature requires v4l2 dev libraries (`libv4l-dev`)
 - The `web` feature pulls in axum and tower dependencies
-- Use `--release` for performance testing (YOLOX inference is ~10x slower in debug)
+- Use `--release` for performance testing (CLIP inference is ~10x slower in debug)

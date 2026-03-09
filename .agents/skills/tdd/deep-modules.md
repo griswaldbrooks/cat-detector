@@ -28,7 +28,7 @@ From "A Philosophy of Software Design":
 
 ## Examples in This Project
 
-**Deep**: `OnnxDetector` — simple `detect(&DynamicImage) -> Vec<Detection>` interface hides preprocessing, inference, grid decoding, NMS.
+**Deep**: `ClipDetector` — simple `detect(&DynamicImage) -> Vec<Detection>` interface hides CLIP preprocessing, ONNX inference, cosine similarity, and softmax classification.
 
 **Deep**: `CatTracker` — simple `update(bool) -> Option<TrackerEvent>` hides hysteresis state machine with enter/exit thresholds and timing.
 
