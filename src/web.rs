@@ -295,6 +295,7 @@ fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, image::ImageError> {
 /// API response for /api/system-info
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemInfoResponse {
+    pub version: String,
     pub model_name: String,
     pub model_format: String,
     pub confidence_threshold: f32,
@@ -712,7 +713,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <body>
     <div class="container">
         <header>
-            <h1>Cat Detector</h1>
+            <h1>Cat Detector <span id="versionTag" style="font-size:14px;color:#888;font-weight:normal;"></span></h1>
             <nav style="display:flex;align-items:center;gap:20px;">
                 <a href="/sessions" style="color:#60a5fa;text-decoration:none;font-size:14px;">Sessions</a>
                 <button class="info-btn" id="infoBtn" title="System Info">i</button>
@@ -838,6 +839,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 fetch('/api/system-info').then(function(r) { return r.json(); }).then(function(info) {
                     var grid = document.getElementById('systemInfoGrid');
                     var items = [
+                        ['Version', info.version || 'Unknown'],
                         ['Model', info.model_name || 'Unknown'],
                         ['Format', info.model_format || 'Unknown'],
                         ['Threshold', info.confidence_threshold != null ? info.confidence_threshold.toFixed(2) : 'N/A'],
@@ -852,6 +854,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     infoLoaded = false;
                 });
             }
+        });
+
+        // Load version into header
+        fetch('/api/system-info').then(function(r) { return r.json(); }).then(function(info) {
+            if (info.version) document.getElementById('versionTag').textContent = 'v' + info.version;
         });
 
         // Initial load
@@ -1558,6 +1565,7 @@ mod tests {
     #[test]
     fn test_system_info_response_serializes() {
         let response = SystemInfoResponse {
+            version: "1.0.0".to_string(),
             model_name: "clip_vitb32_image.onnx".to_string(),
             model_format: "clip".to_string(),
             confidence_threshold: 0.5,
@@ -1648,6 +1656,7 @@ mod tests {
 
         let mut web_state = WebAppState::new();
         web_state.system_info = Some(SystemInfoResponse {
+            version: "1.0.0".to_string(),
             model_name: "clip_vitb32_image.onnx".to_string(),
             model_format: "clip".to_string(),
             confidence_threshold: 0.5,

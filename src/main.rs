@@ -145,6 +145,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             config.storage.output_dir.clone(),
         );
         web_app_state.system_info = Some(web::SystemInfoResponse {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             model_name: config
                 .detector
                 .model_path
