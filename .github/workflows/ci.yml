@@ -31,7 +31,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --features real-camera,web -- -D warnings
+        run: cargo clippy --all-features -- -D warnings
 
   test:
     name: Unit Tests
