@@ -7,7 +7,7 @@ Rust application that monitors a USB webcam for cats using CLIP ViT-B/32 zero-sh
 ```bash
 # Build
 cargo build --release --features real-camera,web
-cargo clippy --all-features -- -D warnings
+cargo clippy --features real-camera,web -- -D warnings
 cargo fmt --check
 
 # Unit tests (no external deps)

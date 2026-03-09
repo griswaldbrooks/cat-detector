@@ -222,11 +222,7 @@ impl SignalNotifier {
             args.push(account.clone());
         }
 
-        args.extend([
-            "send".to_string(),
-            "-m".to_string(),
-            message,
-        ]);
+        args.extend(["send".to_string(), "-m".to_string(), message]);
 
         // Recipient must come before --attachment (signal-cli native parsing quirk)
         args.push(self.recipient.clone());
@@ -278,9 +274,9 @@ impl Notifier for SignalNotifier {
                 .args(&args)
                 .output(),
         )
-            .await
-            .map_err(|_| NotifierError::Timeout(timeout.as_secs()))?
-            .map_err(|e| NotifierError::SendError(e.to_string()))?;
+        .await
+        .map_err(|_| NotifierError::Timeout(timeout.as_secs()))?
+        .map_err(|e| NotifierError::SendError(e.to_string()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -699,10 +695,10 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_real_signal_cli_send() {
-        let cli_path = std::env::var("SIGNAL_CLI_PATH")
-            .expect("Set SIGNAL_CLI_PATH to run this test");
-        let recipient = std::env::var("SIGNAL_RECIPIENT")
-            .expect("Set SIGNAL_RECIPIENT to run this test");
+        let cli_path =
+            std::env::var("SIGNAL_CLI_PATH").expect("Set SIGNAL_CLI_PATH to run this test");
+        let recipient =
+            std::env::var("SIGNAL_RECIPIENT").expect("Set SIGNAL_RECIPIENT to run this test");
 
         let notifier = SignalNotifier::new(
             PathBuf::from(&cli_path),
@@ -716,7 +712,10 @@ mod tests {
         .unwrap();
 
         // Verify setup
-        let version = notifier.verify_setup().await.expect("signal-cli verify failed");
+        let version = notifier
+            .verify_setup()
+            .await
+            .expect("signal-cli verify failed");
         println!("signal-cli version: {}", version);
 
         // Send a test notification
