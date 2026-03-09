@@ -44,7 +44,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 
 - **Model**: CLIP ViT-B/32 (default, zero-shot, 224x224, 3-class: cat/room/person) or YOLO11n (640x640). Cat = COCO class 15. Also supports YOLOX via `ModelFormat` auto-detection
 - **ONNX Runtime**: loaded dynamically via `ORT_DYLIB_PATH` env var
-- **Cargo features**: `real-camera` (v4l2), `web` (axum), `nokhwa-camera` (unused)
+- **Cargo features**: `real-camera` (v4l2), `web` (axum)
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`
 - **Async**: tokio runtime, `async_trait` for trait definitions
 - **Logging**: `tracing` crate

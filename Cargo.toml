@@ -8,7 +8,6 @@ license = "MIT"
 [features]
 default = []
 real-camera = ["v4l"]
-nokhwa-camera = ["nokhwa"]
 web = ["axum", "tower-http", "tokio-stream"]
 
 [dependencies]
@@ -26,7 +25,6 @@ toml = "0.8"
 image = "0.25"
 
 # Camera capture (optional)
-nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 v4l = { version = "0.14", optional = true }
 
 # Web server (optional)

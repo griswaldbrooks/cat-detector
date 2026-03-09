@@ -166,49 +166,6 @@ impl CameraCapture for V4L2Camera {
     }
 }
 
-#[cfg(feature = "nokhwa-camera")]
-pub struct NokhwaCamera {
-    camera: nokhwa::Camera,
-}
-
-#[cfg(feature = "nokhwa-camera")]
-impl NokhwaCamera {
-    pub fn new(device_path: &str, width: u32, height: u32, fps: u32) -> Result<Self, CameraError> {
-        use nokhwa::pixel_format::RgbFormat;
-        use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
-
-        let index = CameraIndex::String(device_path.to_string());
-        let requested =
-            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-
-        let camera = nokhwa::Camera::new(index, requested)
-            .map_err(|e| CameraError::InitError(e.to_string()))?;
-
-        Ok(Self { camera })
-    }
-}
-
-#[cfg(feature = "nokhwa-camera")]
-#[async_trait]
-impl CameraCapture for NokhwaCamera {
-    async fn capture_frame(&mut self) -> Result<DynamicImage, CameraError> {
-        let frame = self
-            .camera
-            .frame()
-            .map_err(|e| CameraError::CaptureError(e.to_string()))?;
-
-        let decoded = frame
-            .decode_image::<nokhwa::pixel_format::RgbFormat>()
-            .map_err(|e| CameraError::CaptureError(e.to_string()))?;
-
-        Ok(DynamicImage::ImageRgb8(decoded))
-    }
-
-    fn is_available(&self) -> bool {
-        self.camera.is_stream_open()
-    }
-}
-
 /// A stub camera for when the real camera feature is not enabled
 pub struct StubCamera {
     width: u32,
