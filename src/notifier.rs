@@ -652,6 +652,42 @@ mod tests {
         assert_eq!(timeout, Duration::from_secs(30));
     }
 
+    /// Integration test: sends a real Signal notification.
+    /// Run with: SIGNAL_CLI_PATH=/path/to/signal-cli SIGNAL_RECIPIENT=+1234567890 \
+    ///           cargo test --lib test_real_signal_cli_send -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn test_real_signal_cli_send() {
+        let cli_path = std::env::var("SIGNAL_CLI_PATH")
+            .expect("Set SIGNAL_CLI_PATH to run this test");
+        let recipient = std::env::var("SIGNAL_RECIPIENT")
+            .expect("Set SIGNAL_RECIPIENT to run this test");
+
+        let notifier = SignalNotifier::new(
+            PathBuf::from(&cli_path),
+            recipient,
+            true,
+            true,
+            true,
+            Duration::from_secs(120),
+        )
+        .unwrap();
+
+        // Verify setup
+        let version = notifier.verify_setup().await.expect("signal-cli verify failed");
+        println!("signal-cli version: {}", version);
+
+        // Send a test notification
+        let result = notifier
+            .notify(NotificationEvent::CatEntered {
+                timestamp: Utc::now(),
+            })
+            .await;
+
+        assert!(result.is_ok(), "Failed to send: {:?}", result.err());
+        println!("Test notification sent successfully");
+    }
+
     #[test]
     fn test_signal_notifier_new_rejects_invalid_recipient() {
         let result = SignalNotifier::new(
