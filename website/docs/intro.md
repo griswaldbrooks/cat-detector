@@ -8,6 +8,8 @@ title: Introduction
 
 A Rust application that monitors a USB webcam for cats using CLIP ViT-B/32 zero-shot classification via ONNX Runtime. It saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream and session browsing.
 
+![Live dashboard detecting a cat](/img/ui_example1.png)
+
 ## Features
 
 - **CLIP zero-shot detection** — no training required, works from any camera angle
@@ -48,3 +50,9 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 ```
 
 See the [Deployment Guide](./deployment.md) for full setup instructions.
+
+## Screenshots
+
+| Sessions | Signal Notification |
+|---|---|
+| ![Session browser](/img/ui_example2.png) | ![Signal notification](/img/signal_example1.png) |

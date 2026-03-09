@@ -4,6 +4,8 @@
 
 A Rust application that monitors a USB webcam for cats using CLIP ViT-B/32 zero-shot classification. Saves images on cat entry/exit, records video of visits, sends Signal notifications, and serves a web dashboard with live MJPEG stream.
 
+![Live dashboard detecting a cat](docs/ui_example1.png)
+
 ## Features
 
 - Real-time cat detection using CLIP ViT-B/32 (zero-shot, ~21ms on CPU)
@@ -87,6 +89,10 @@ When built with the `web` feature, serves a dashboard at `http://localhost:8080`
 - `/sessions` -- Browse cat visit sessions with images and video
 - `/captures/:filename` -- Direct image/video access
 - `/api/system-info` -- JSON system info
+
+| Sessions | Signal Notification |
+|---|---|
+| ![Session browser](docs/ui_example2.png) | ![Signal notification](docs/signal_example1.png) |
 
 ## CLI Commands
 
