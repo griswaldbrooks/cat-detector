@@ -13,8 +13,8 @@ cargo fmt --check
 # Unit tests (no external deps)
 cargo test --lib
 
-# Integration tests (needs model + ORT runtime)
-ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test integration_test
+# Integration tests (needs CLIP model + ORT runtime)
+ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test clip_integration_test
 
 # Run
 ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
@@ -50,7 +50,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records with wallclock timestamps for real-time playback
 - **Signal notifications**: signal-cli with linked device support (`-a` account flag), video attachments on exit, `test-notification` CLI command
-- **Tests**: 87 unit + 1 ignored + 9 YOLO integration + 15 CLIP integration; all traits have Mock* implementations
+- **Tests**: 87 unit + 1 ignored + 15 CLIP integration; all traits have Mock* implementations
 - **Deployment guide**: `docs/deployment.md` — full setup including permissions, signal-cli, systemd
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 - **Python scripts**: managed via [pixi](https://pixi.sh) (`pixi run test-clip`, `pixi run -e clip generate-embeddings`)

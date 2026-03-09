@@ -128,8 +128,7 @@ mod clip_cat_detection {
 
     clip_test!(test_clip_overhead_tabby, {
         let detector = make_clip_detector(0.5);
-        let img =
-            image::open("test_images/cat_overhead_tabby1.jpg").expect("Failed to load image");
+        let img = image::open("test_images/cat_overhead_tabby1.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             !detections.is_empty(),
@@ -163,8 +162,8 @@ mod clip_cat_detection {
 
     clip_test!(test_clip_inside_litterbot, {
         let detector = make_clip_detector(0.5);
-        let img = image::open("test_images/cat_inside_litterbot1.jpg")
-            .expect("Failed to load image");
+        let img =
+            image::open("test_images/cat_inside_litterbot1.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             !detections.is_empty(),
@@ -186,8 +185,7 @@ mod clip_negative_detection {
 
     clip_test!(test_clip_no_cat_overhead, {
         let detector = make_clip_detector(0.3);
-        let img =
-            image::open("test_images/no_cat_overhead.jpg").expect("Failed to load image");
+        let img = image::open("test_images/no_cat_overhead.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             detections.is_empty(),
@@ -199,10 +197,7 @@ mod clip_negative_detection {
         let detector = make_clip_detector(0.3);
         let img = image::open("test_images/no_cat_room.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(
-            detections.is_empty(),
-            "Should not detect cat in empty room"
-        );
+        assert!(detections.is_empty(), "Should not detect cat in empty room");
     });
 
     clip_test!(test_clip_no_cat2, {
@@ -222,10 +217,7 @@ mod clip_negative_detection {
         let img = image::open("test_images/person_images/person_overhead_1.jpg")
             .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(
-            detections.is_empty(),
-            "Should not detect person as cat"
-        );
+        assert!(detections.is_empty(), "Should not detect person as cat");
     });
 
     clip_test!(test_clip_person2_not_detected_as_cat, {
@@ -233,10 +225,7 @@ mod clip_negative_detection {
         let img = image::open("test_images/person_images/person_overhead_2.jpg")
             .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(
-            detections.is_empty(),
-            "Should not detect person as cat"
-        );
+        assert!(detections.is_empty(), "Should not detect person as cat");
     });
 }
 
