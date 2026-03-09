@@ -29,3 +29,8 @@ config.toml
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# Docusaurus
+/website/node_modules/
+/website/build/
+/website/.docusaurus/
