@@ -306,6 +306,7 @@ where
                         .notify(NotificationEvent::CatExited {
                             timestamp: *timestamp,
                             duration_secs,
+                            video_path: None,
                         })
                         .await
                     {

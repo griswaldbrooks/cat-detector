@@ -48,6 +48,10 @@ enabled = false
 notify_on_enter = true
 # Send notification when cat exits
 notify_on_exit = true
+# Send recorded video as attachment with exit notification
+send_video = true
+# Timeout in seconds for sending attachments (videos can be large)
+attachment_timeout_secs = 120
 
 [tracking]
 # How often to save sample images while cat is present (seconds)

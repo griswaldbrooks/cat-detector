@@ -74,6 +74,12 @@ enum Commands {
         #[arg(short, long)]
         config: PathBuf,
     },
+    /// Test Signal notification setup (verify signal-cli and send test message)
+    TestNotification {
+        /// Path to configuration file
+        #[arg(short, long, default_value = "config.toml")]
+        config: PathBuf,
+    },
     /// Run only the web dashboard (for testing)
     #[cfg(feature = "web")]
     Web {
@@ -108,6 +114,7 @@ async fn main() -> Result<()> {
             size,
             format,
         } => test_image(image, model, threshold, size, format).await,
+        Commands::TestNotification { config } => test_notification(config).await,
         Commands::InstallService { config } => install_service(config).await,
         Commands::UninstallService => uninstall_service().await,
         Commands::Status => show_status().await,
@@ -270,6 +277,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             recipient,
             config.notification.notify_on_enter,
             config.notification.notify_on_exit,
+            config.notification.send_video,
+            std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
         )?
     } else {
         notifier::SignalNotifier::disabled()
@@ -463,17 +472,21 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
 
                         // Stop video recording
-                        {
+                        let video_path = {
                             use recorder::VideoRecorder;
                             match video_recorder.stop_recording() {
-                                Ok(Some(video_path)) => {
-                                    info!("Video saved to {:?}", video_path);
-                                    session_mgr.set_video_path(video_path);
+                                Ok(Some(vp)) => {
+                                    info!("Video saved to {:?}", vp);
+                                    session_mgr.set_video_path(vp.clone());
+                                    Some(vp)
                                 }
-                                Ok(None) => {}
-                                Err(e) => tracing::warn!("Failed to stop recording: {}", e),
+                                Ok(None) => None,
+                                Err(e) => {
+                                    tracing::warn!("Failed to stop recording: {}", e);
+                                    None
+                                }
                             }
-                        }
+                        };
 
                         let saved = stor
                             .save_image(&frame, storage::ImageType::Exit, timestamp)
@@ -510,6 +523,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 .notify(notifier::NotificationEvent::CatExited {
                                     timestamp,
                                     duration_secs,
+                                    video_path,
                                 })
                                 .await
                             {
@@ -554,6 +568,61 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     }
 
     info!("Cat detector stopped");
+    Ok(())
+}
+
+async fn test_notification(config_path: PathBuf) -> Result<()> {
+    info!("Testing Signal notification setup...");
+
+    let config = config::Config::load(&config_path)
+        .with_context(|| format!("Failed to load config from {:?}", config_path))?;
+
+    if !config.notification.enabled {
+        anyhow::bail!(
+            "Notifications are disabled in config. Set [notification] enabled = true first."
+        );
+    }
+
+    let signal_path = config
+        .notification
+        .signal_cli_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/signal-cli"));
+    let recipient = config
+        .notification
+        .recipient
+        .clone()
+        .expect("Recipient required when notifications enabled");
+
+    let notif = notifier::SignalNotifier::new(
+        signal_path,
+        recipient,
+        true,
+        true,
+        config.notification.send_video,
+        std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
+    )?;
+
+    // Verify signal-cli is installed
+    println!("Checking signal-cli...");
+    match notif.verify_setup().await {
+        Ok(version) => println!("signal-cli found: {}", version),
+        Err(e) => {
+            anyhow::bail!("signal-cli verification failed: {}", e);
+        }
+    }
+
+    // Send a test message
+    println!("Sending test notification...");
+    use notifier::Notifier;
+    notif
+        .notify(notifier::NotificationEvent::CatEntered {
+            timestamp: chrono::Utc::now(),
+        })
+        .await
+        .context("Failed to send test notification")?;
+
+    println!("Test notification sent successfully!");
     Ok(())
 }
 

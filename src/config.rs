@@ -145,6 +145,18 @@ pub struct NotificationConfig {
     pub notify_on_enter: bool,
     #[serde(default)]
     pub notify_on_exit: bool,
+    #[serde(default = "default_send_video")]
+    pub send_video: bool,
+    #[serde(default = "default_attachment_timeout_secs")]
+    pub attachment_timeout_secs: u64,
+}
+
+fn default_send_video() -> bool {
+    true
+}
+
+fn default_attachment_timeout_secs() -> u64 {
+    120
 }
 
 impl Default for NotificationConfig {
@@ -155,6 +167,8 @@ impl Default for NotificationConfig {
             recipient: None,
             notify_on_enter: true,
             notify_on_exit: true,
+            send_video: default_send_video(),
+            attachment_timeout_secs: default_attachment_timeout_secs(),
         }
     }
 }

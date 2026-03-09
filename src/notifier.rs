@@ -27,6 +27,7 @@ pub enum NotificationEvent {
     CatExited {
         timestamp: DateTime<Utc>,
         duration_secs: u64,
+        video_path: Option<PathBuf>,
     },
 }
 
@@ -42,6 +43,7 @@ impl NotificationEvent {
             NotificationEvent::CatExited {
                 timestamp,
                 duration_secs,
+                ..
             } => {
                 let duration = format_duration(*duration_secs);
                 format!(
@@ -83,6 +85,8 @@ pub struct SignalNotifier {
     notify_on_enter: bool,
     notify_on_exit: bool,
     timeout: Duration,
+    send_video: bool,
+    attachment_timeout: Duration,
 }
 
 /// Validate that a recipient looks like a phone number or signal group ID.
@@ -124,6 +128,8 @@ impl SignalNotifier {
         recipient: String,
         notify_on_enter: bool,
         notify_on_exit: bool,
+        send_video: bool,
+        attachment_timeout: Duration,
     ) -> Result<Self, NotifierError> {
         validate_recipient(&recipient)?;
         Ok(Self {
@@ -133,6 +139,8 @@ impl SignalNotifier {
             notify_on_enter,
             notify_on_exit,
             timeout: SIGNAL_CLI_TIMEOUT,
+            send_video,
+            attachment_timeout,
         })
     }
 
@@ -144,7 +152,41 @@ impl SignalNotifier {
             notify_on_enter: false,
             notify_on_exit: false,
             timeout: SIGNAL_CLI_TIMEOUT,
+            send_video: false,
+            attachment_timeout: Duration::from_secs(120),
         }
+    }
+
+    /// Verify that signal-cli is installed and working. Returns the version string.
+    pub async fn verify_setup(&self) -> Result<String, NotifierError> {
+        let path = if self.signal_cli_path.as_os_str().is_empty() {
+            PathBuf::from("/usr/local/bin/signal-cli")
+        } else {
+            self.signal_cli_path.clone()
+        };
+
+        if !path.exists() {
+            return Err(NotifierError::SignalCliNotFound(format!(
+                "signal-cli not found at {:?}",
+                path
+            )));
+        }
+
+        let output = tokio::process::Command::new(&path)
+            .arg("--version")
+            .output()
+            .await
+            .map_err(|e| NotifierError::SendError(format!("Failed to run signal-cli: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(NotifierError::SendError(format!(
+                "signal-cli --version failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     fn should_notify(&self, event: &NotificationEvent) -> bool {
@@ -174,13 +216,44 @@ impl Notifier for SignalNotifier {
 
         let message = event.format_message();
 
-        let cmd = tokio::process::Command::new(&self.signal_cli_path)
-            .args(["send", "-m", &message, &self.recipient])
-            .output();
+        // Check if we should attach a video file
+        let video_attachment = if self.send_video {
+            if let NotificationEvent::CatExited {
+                video_path: Some(ref path),
+                ..
+            } = event
+            {
+                if path.exists() {
+                    Some(path.clone())
+                } else {
+                    tracing::warn!("Video file not found for attachment: {:?}", path);
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        let output = tokio::time::timeout(self.timeout, cmd)
+        let mut command = tokio::process::Command::new(&self.signal_cli_path);
+        command.args(["send", "-m", &message]);
+
+        if let Some(ref attachment_path) = video_attachment {
+            command.args(["--attachment", &attachment_path.to_string_lossy()]);
+        }
+
+        command.arg(&self.recipient);
+
+        let timeout = if video_attachment.is_some() {
+            self.attachment_timeout
+        } else {
+            self.timeout
+        };
+
+        let output = tokio::time::timeout(timeout, command.output())
             .await
-            .map_err(|_| NotifierError::Timeout(self.timeout.as_secs()))?
+            .map_err(|_| NotifierError::Timeout(timeout.as_secs()))?
             .map_err(|e| NotifierError::SendError(e.to_string()))?;
 
         if !output.status.success() {
@@ -310,6 +383,7 @@ mod tests {
             .notify(NotificationEvent::CatExited {
                 timestamp,
                 duration_secs: 120,
+                video_path: None,
             })
             .await
             .unwrap();
@@ -333,6 +407,7 @@ mod tests {
             .notify(NotificationEvent::CatExited {
                 timestamp,
                 duration_secs: 60,
+                video_path: None,
             })
             .await
             .unwrap();
@@ -389,6 +464,7 @@ mod tests {
         let event = NotificationEvent::CatExited {
             timestamp,
             duration_secs: 3725, // 1h 2m 5s
+            video_path: None,
         };
         let message = event.format_message();
 
@@ -411,6 +487,8 @@ mod tests {
             "+1234567890".to_string(),
             true,
             false,
+            true,
+            Duration::from_secs(120),
         )
         .unwrap();
 
@@ -420,6 +498,7 @@ mod tests {
         assert!(!notifier.should_notify(&NotificationEvent::CatExited {
             timestamp: Utc::now(),
             duration_secs: 60,
+            video_path: None,
         }));
     }
 
@@ -457,6 +536,8 @@ mod tests {
             "not-valid".to_string(),
             true,
             true,
+            true,
+            Duration::from_secs(120),
         );
         assert!(matches!(result, Err(NotifierError::InvalidRecipient(_))));
     }
