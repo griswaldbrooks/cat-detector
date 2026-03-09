@@ -1,3 +1,4 @@
+use cat_detector::detector::CatDetector;
 use cat_detector::{camera, config, detector, notifier, recorder, service, storage, web};
 
 use anyhow::{Context, Result};
@@ -39,18 +40,12 @@ enum Commands {
     TestImage {
         /// Path to image file
         image: PathBuf,
-        /// Path to ONNX model file
-        #[arg(short, long, default_value = "models/yolox_s.onnx")]
+        /// Path to CLIP ONNX model file
+        #[arg(short, long, default_value = "models/clip_vitb32_image.onnx")]
         model: PathBuf,
         /// Confidence threshold (0.0 - 1.0)
         #[arg(short, long, default_value = "0.5")]
         threshold: f32,
-        /// Model input size (416 for tiny, 640 for s/m/l)
-        #[arg(short, long, default_value = "640")]
-        size: u32,
-        /// Model format: auto, yolox, yolo11, clip
-        #[arg(short = 'f', long, default_value = "auto")]
-        format: String,
     },
     /// Install as a systemd service
     InstallService {
@@ -111,9 +106,7 @@ async fn main() -> Result<()> {
             image,
             model,
             threshold,
-            size,
-            format,
-        } => test_image(image, model, threshold, size, format).await,
+        } => test_image(image, model, threshold).await,
         Commands::TestNotification { config } => test_notification(config).await,
         Commands::InstallService { config } => install_service(config).await,
         Commands::UninstallService => uninstall_service().await,
@@ -214,40 +207,25 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     .context("Failed to initialize camera")?;
 
     // Initialize detector
-    let det: Arc<dyn detector::CatDetector> = if config.detector.model_format == "clip" {
-        let text_emb_path = config
-            .detector
-            .text_embeddings_path
-            .clone()
-            .unwrap_or_else(|| {
-                config
-                    .detector
-                    .model_path
-                    .with_file_name("clip_text_embeddings.bin")
-            });
-        Arc::new(
-            detector::ClipDetector::new(
-                &config.detector.model_path,
-                &text_emb_path,
-                config.detector.confidence_threshold,
-                config.detector.cat_class_id,
-            )
-            .context("Failed to initialize CLIP detector")?,
+    let text_emb_path = config
+        .detector
+        .text_embeddings_path
+        .clone()
+        .unwrap_or_else(|| {
+            config
+                .detector
+                .model_path
+                .with_file_name("clip_text_embeddings.bin")
+        });
+    let det: Arc<dyn detector::CatDetector> = Arc::new(
+        detector::ClipDetector::new(
+            &config.detector.model_path,
+            &text_emb_path,
+            config.detector.confidence_threshold,
+            config.detector.cat_class_id,
         )
-    } else {
-        let model_format =
-            parse_model_format(&config.detector.model_format, &config.detector.model_path);
-        Arc::new(
-            detector::OnnxDetector::new_with_format(
-                &config.detector.model_path,
-                config.detector.confidence_threshold,
-                config.detector.cat_class_id,
-                config.detector.input_size,
-                model_format,
-            )
-            .context("Failed to initialize detector")?,
-        )
-    };
+        .context("Failed to initialize CLIP detector")?,
+    );
 
     // Initialize storage
     let stor = Arc::new(
@@ -656,8 +634,9 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
 
     // Run detection
     info!("Running detection...");
-    let capture_model_path = std::path::Path::new("models/yolo11n.onnx");
-    let detector = detector::OnnxDetector::new_with_format(capture_model_path, 0.5, 15, 640, None)
+    let capture_model_path = std::path::Path::new("models/clip_vitb32_image.onnx");
+    let capture_emb_path = std::path::Path::new("models/clip_text_embeddings.bin");
+    let detector = detector::ClipDetector::new(capture_model_path, capture_emb_path, 0.5, 15)
         .context("Failed to initialize detector")?;
 
     let start = std::time::Instant::now();
@@ -691,13 +670,7 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn test_image(
-    image_path: PathBuf,
-    model_path: PathBuf,
-    threshold: f32,
-    input_size: u32,
-    format: String,
-) -> Result<()> {
+async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32) -> Result<()> {
     info!("Testing detection on {:?}", image_path);
     info!("Using model: {:?}", model_path);
     info!("Confidence threshold: {}", threshold);
@@ -707,31 +680,10 @@ async fn test_image(
         .with_context(|| format!("Failed to open image: {:?}", image_path))?;
     info!("Loaded image: {}x{}", img.width(), img.height());
 
-    // Initialize detector based on format
-    let det: Box<dyn detector::CatDetector> = if format == "clip" {
-        let text_emb_path = model_path.with_file_name("clip_text_embeddings.bin");
-        info!(
-            "Using CLIP detector with text embeddings: {:?}",
-            text_emb_path
-        );
-        Box::new(
-            detector::ClipDetector::new(&model_path, &text_emb_path, threshold, 15)
-                .context("Failed to initialize CLIP detector")?,
-        )
-    } else {
-        let model_format = parse_model_format(&format, &model_path);
-        info!("Input size: {}x{}", input_size, input_size);
-        Box::new(
-            detector::OnnxDetector::new_with_format(
-                &model_path,
-                threshold,
-                15,
-                input_size,
-                model_format,
-            )
-            .context("Failed to initialize detector")?,
-        )
-    };
+    // Initialize CLIP detector
+    let text_emb_path = model_path.with_file_name("clip_text_embeddings.bin");
+    let det = detector::ClipDetector::new(&model_path, &text_emb_path, threshold, 15)
+        .context("Failed to initialize CLIP detector")?;
     info!("Detector initialized");
 
     // Run detection
@@ -772,21 +724,6 @@ async fn test_image(
     }
 
     Ok(())
-}
-
-fn parse_model_format(
-    format_str: &str,
-    model_path: &std::path::Path,
-) -> Option<detector::ModelFormat> {
-    match format_str {
-        "yolox" => Some(detector::ModelFormat::Yolox),
-        "yolo11" | "yolov8" => Some(detector::ModelFormat::Yolo11),
-        _ => {
-            // "auto" or unknown: let OnnxDetector auto-detect from filename
-            let _ = model_path; // used by OnnxDetector::new_with_format internally
-            None
-        }
-    }
 }
 
 fn coco_class_name(class_id: u32) -> &'static str {

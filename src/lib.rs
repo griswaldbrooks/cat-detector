@@ -1,6 +1,6 @@
 //! Cat Detector Library
 //!
-//! A webcam-based cat detection application using YOLOX and ONNX Runtime.
+//! A webcam-based cat detection application using CLIP ViT-B/32 and ONNX Runtime.
 
 pub mod app;
 pub mod camera;

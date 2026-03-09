@@ -72,7 +72,7 @@ pub struct DetectorConfig {
     pub confidence_threshold: f32,
     #[serde(default = "default_cat_class_id")]
     pub cat_class_id: u32,
-    /// Model format: "auto" (detect from filename), "yolox", "yolo11", or "clip"
+    /// Model format (only "clip" is supported)
     #[serde(default = "default_model_format")]
     pub model_format: String,
     /// Path to CLIP text embeddings file (required when model_format = "clip")
@@ -84,7 +84,7 @@ fn default_input_size() -> u32 {
 }
 
 fn default_model_format() -> String {
-    "auto".to_string()
+    "clip".to_string()
 }
 
 fn default_confidence_threshold() -> f32 {
@@ -98,7 +98,7 @@ fn default_cat_class_id() -> u32 {
 impl Default for DetectorConfig {
     fn default() -> Self {
         Self {
-            model_path: PathBuf::from("models/yolo11n.onnx"),
+            model_path: PathBuf::from("models/clip_vitb32_image.onnx"),
             input_size: default_input_size(),
             confidence_threshold: default_confidence_threshold(),
             cat_class_id: default_cat_class_id(),
@@ -309,7 +309,7 @@ frame_height = 720
 fps = 15
 
 [detector]
-model_path = "models/yolov8n.onnx"
+model_path = "models/clip_vitb32_image.onnx"
 confidence_threshold = 0.7
 cat_class_id = 15
 
@@ -348,7 +348,7 @@ detection_interval_ms = 250
 [camera]
 
 [detector]
-model_path = "models/yolov8n.onnx"
+model_path = "models/clip_vitb32_image.onnx"
 
 [storage]
 output_dir = "captures"
@@ -384,7 +384,7 @@ enabled = false
 [camera]
 
 [detector]
-model_path = "models/yolov8n.onnx"
+model_path = "models/clip_vitb32_image.onnx"
 confidence_threshold = 1.5
 
 [storage]
@@ -411,7 +411,7 @@ enabled = false
 [camera]
 
 [detector]
-model_path = "models/yolov8n.onnx"
+model_path = "models/clip_vitb32_image.onnx"
 
 [storage]
 output_dir = "captures"
@@ -459,7 +459,7 @@ device_path = missing bracket
 [camera]
 
 [detector]
-model_path = "models/yolov8n.onnx"
+model_path = "models/clip_vitb32_image.onnx"
 
 [storage]
 output_dir = "captures"
