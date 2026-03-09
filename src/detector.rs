@@ -421,8 +421,8 @@ impl ClipDetector {
             ));
         }
 
-        let count = u32::from_le_bytes([emb_bytes[0], emb_bytes[1], emb_bytes[2], emb_bytes[3]])
-            as usize;
+        let count =
+            u32::from_le_bytes([emb_bytes[0], emb_bytes[1], emb_bytes[2], emb_bytes[3]]) as usize;
         let embedding_dim =
             u32::from_le_bytes([emb_bytes[4], emb_bytes[5], emb_bytes[6], emb_bytes[7]]) as usize;
 
@@ -879,11 +879,7 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&3u32.to_le_bytes()); // count
         bytes.extend_from_slice(&4u32.to_le_bytes()); // dim
-        for f in cat_emb
-            .iter()
-            .chain(neg1_emb.iter())
-            .chain(neg2_emb.iter())
-        {
+        for f in cat_emb.iter().chain(neg1_emb.iter()).chain(neg2_emb.iter()) {
             bytes.extend_from_slice(&f.to_le_bytes());
         }
 
@@ -892,10 +888,8 @@ mod tests {
 
         // Verify the embedding loading logic by parsing the file format
         let data = std::fs::read(tmp.path()).unwrap();
-        let count =
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let dim =
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let dim = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
 
         assert_eq!(count, 3);
         assert_eq!(dim, 4);
@@ -906,8 +900,8 @@ mod tests {
             .collect();
 
         assert_eq!(floats.len(), 12); // 3 * 4
-        assert_eq!(floats[0], 0.5);   // cat_emb[0]
-        assert_eq!(floats[4], -0.5);  // neg1_emb[0]
-        assert_eq!(floats[8], 0.0);   // neg2_emb[0]
+        assert_eq!(floats[0], 0.5); // cat_emb[0]
+        assert_eq!(floats[4], -0.5); // neg1_emb[0]
+        assert_eq!(floats[8], 0.0); // neg2_emb[0]
     }
 }
