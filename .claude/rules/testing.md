@@ -29,6 +29,10 @@ globs:
 - Config parsing with valid/invalid/missing values
 - Error paths and edge cases
 
+## TDD for New Features
+- For non-trivial features (new modules, new traits, significant behavior changes), use the TDD skill with red-green-refactor and the agent loop: **coder > code-reviewer > test-runner**
+- Small changes (config tweaks, one-liner fixes, doc updates) don't require TDD — just add tests alongside the change
+
 ## What Not to Test
 - Private helper functions (test through public API)
 - Third-party crate behavior
