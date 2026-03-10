@@ -33,6 +33,13 @@ cargo clippy --all-features -- -D warnings
 cargo fmt --check
 ```
 
+### Build .deb packages
+```bash
+./scripts/build-deb.sh
+```
+Produces `cat-detector_VERSION_amd64.deb` and `cat-detector-models_VERSION_all.deb`.
+Requires `fpm` (`gem install fpm`).
+
 ## Notes
 - The `real-camera` feature requires v4l2 dev libraries (`libv4l-dev`)
 - The `web` feature pulls in axum and tower dependencies
