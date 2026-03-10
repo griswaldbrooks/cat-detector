@@ -32,6 +32,37 @@ install -d -o griswald -g griswald "$DATA_DIR"
 install -d -o griswald -g griswald "$DATA_DIR/captures"
 install -d -o griswald -g griswald "$DATA_DIR/captures/sessions"
 
+# Migrate captures/sessions from legacy rsync deployment (~/cat-detector/captures)
+LEGACY_DIR="/home/griswald/cat-detector/captures"
+if [ -d "$LEGACY_DIR" ]; then
+    migrated=0
+    for ext in jpg mp4; do
+        for f in "$LEGACY_DIR"/*."$ext"; do
+            [ -e "$f" ] || continue
+            dest="$DATA_DIR/captures/$(basename "$f")"
+            if [ ! -e "$dest" ]; then
+                cp "$f" "$dest"
+                chown griswald:griswald "$dest"
+                migrated=$((migrated + 1))
+            fi
+        done
+    done
+    if [ -d "$LEGACY_DIR/sessions" ]; then
+        for f in "$LEGACY_DIR/sessions"/*.json; do
+            [ -e "$f" ] || continue
+            dest="$DATA_DIR/captures/sessions/$(basename "$f")"
+            if [ ! -e "$dest" ]; then
+                cp "$f" "$dest"
+                chown griswald:griswald "$dest"
+                migrated=$((migrated + 1))
+            fi
+        done
+    fi
+    if [ "$migrated" -gt 0 ]; then
+        echo "Migrated $migrated files from legacy deployment at $LEGACY_DIR"
+    fi
+fi
+
 # Ensure ONNX Runtime library is discoverable via ldconfig
 if [ -d "$ORT_LIB_DIR" ]; then
     echo "$ORT_LIB_DIR" > "$LDCONFIG_FILE"
