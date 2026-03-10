@@ -61,53 +61,72 @@ impl CatTracker {
         cat_detected: bool,
         timestamp: DateTime<Utc>,
     ) -> Vec<TrackerEvent> {
-        let mut events = Vec::new();
-
         match self.state {
-            CatState::Absent => {
-                if cat_detected {
-                    self.consecutive_detections += 1;
-                    self.consecutive_non_detections = 0;
+            CatState::Absent => self.process_absent(cat_detected, timestamp),
+            CatState::Present => self.process_present(cat_detected, timestamp),
+        }
+    }
 
-                    if self.consecutive_detections >= self.enter_threshold {
-                        self.state = CatState::Present;
-                        self.entry_time = Some(timestamp);
-                        self.last_sample_time = Some(timestamp);
-                        events.push(TrackerEvent::CatEntered { timestamp });
-                    }
-                } else {
-                    self.consecutive_detections = 0;
-                }
-            }
-            CatState::Present => {
-                if cat_detected {
-                    self.consecutive_non_detections = 0;
-
-                    // Check if sample is due
-                    if let Some(last_sample) = self.last_sample_time {
-                        if timestamp - last_sample >= self.sample_interval {
-                            self.last_sample_time = Some(timestamp);
-                            events.push(TrackerEvent::SampleDue { timestamp });
-                        }
-                    }
-                } else {
-                    self.consecutive_non_detections += 1;
-
-                    if self.consecutive_non_detections >= self.exit_threshold {
-                        self.state = CatState::Absent;
-                        let entry_time = self.entry_time.take().unwrap();
-                        self.last_sample_time = None;
-                        self.consecutive_detections = 0;
-                        events.push(TrackerEvent::CatExited {
-                            timestamp,
-                            entry_time,
-                        });
-                    }
-                }
-            }
+    fn process_absent(
+        &mut self,
+        cat_detected: bool,
+        timestamp: DateTime<Utc>,
+    ) -> Vec<TrackerEvent> {
+        if !cat_detected {
+            self.consecutive_detections = 0;
+            return Vec::new();
         }
 
-        events
+        self.consecutive_detections += 1;
+        self.consecutive_non_detections = 0;
+
+        if self.consecutive_detections < self.enter_threshold {
+            return Vec::new();
+        }
+
+        self.state = CatState::Present;
+        self.entry_time = Some(timestamp);
+        self.last_sample_time = Some(timestamp);
+        vec![TrackerEvent::CatEntered { timestamp }]
+    }
+
+    fn process_present(
+        &mut self,
+        cat_detected: bool,
+        timestamp: DateTime<Utc>,
+    ) -> Vec<TrackerEvent> {
+        if cat_detected {
+            self.consecutive_non_detections = 0;
+            return self.check_sample_due(timestamp);
+        }
+
+        self.consecutive_non_detections += 1;
+
+        if self.consecutive_non_detections < self.exit_threshold {
+            return Vec::new();
+        }
+
+        self.state = CatState::Absent;
+        let entry_time = self.entry_time.take().unwrap();
+        self.last_sample_time = None;
+        self.consecutive_detections = 0;
+        vec![TrackerEvent::CatExited {
+            timestamp,
+            entry_time,
+        }]
+    }
+
+    fn check_sample_due(&mut self, timestamp: DateTime<Utc>) -> Vec<TrackerEvent> {
+        let Some(last_sample) = self.last_sample_time else {
+            return Vec::new();
+        };
+
+        if timestamp - last_sample < self.sample_interval {
+            return Vec::new();
+        }
+
+        self.last_sample_time = Some(timestamp);
+        vec![TrackerEvent::SampleDue { timestamp }]
     }
 
     #[allow(dead_code)]
