@@ -76,6 +76,7 @@ cp "$TEXT_EMBEDDINGS" "$MODELS_STAGE/opt/cat-detector/models/clip_text_embedding
 # --- Build cat-detector-models package ---
 echo "Building cat-detector-models_${VERSION}_all.deb..."
 fpm \
+    --force \
     -s dir \
     -t deb \
     -n cat-detector-models \
@@ -91,6 +92,7 @@ fpm \
 # --- Build cat-detector main package ---
 echo "Building cat-detector_${VERSION}_amd64.deb..."
 fpm \
+    --force \
     -s dir \
     -t deb \
     -n cat-detector \
@@ -105,6 +107,7 @@ fpm \
     --config-files /etc/cat-detector/config.example.toml \
     --deb-systemd "$PROJECT_DIR/scripts/packaging/cat-detector.service" \
     --after-install "$PROJECT_DIR/scripts/packaging/postinst.sh" \
+    --after-upgrade "$PROJECT_DIR/scripts/packaging/postinst.sh" \
     --before-remove "$PROJECT_DIR/scripts/packaging/prerm.sh" \
     -C "$MAIN_STAGE" \
     -p "$PROJECT_DIR/cat-detector_${VERSION}_amd64.deb" \

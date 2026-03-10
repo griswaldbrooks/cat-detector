@@ -14,9 +14,23 @@ if [ ! -f "$CONFIG_FILE" ]; then
         # Update model path to installed location
         sed -i 's|model_path = "models/clip_vitb32_image.onnx"|model_path = "/opt/cat-detector/models/clip_vitb32_image.onnx"|' "$CONFIG_FILE"
         sed -i 's|# text_embeddings_path = "models/clip_text_embeddings.bin"|text_embeddings_path = "/opt/cat-detector/models/clip_text_embeddings.bin"|' "$CONFIG_FILE"
+        # Update output_dir to absolute path
+        sed -i 's|output_dir = "captures"|output_dir = "/var/lib/cat-detector/captures"|' "$CONFIG_FILE"
         echo "Created config file at ${CONFIG_FILE}"
     fi
 fi
+
+# Ensure config uses absolute paths (handles upgrades from rsync-deployed versions)
+if [ -f "$CONFIG_FILE" ]; then
+    sed -i 's|^output_dir = "captures"$|output_dir = "/var/lib/cat-detector/captures"|' "$CONFIG_FILE"
+    sed -i 's|^model_path = "models/clip_vitb32_image.onnx"$|model_path = "/opt/cat-detector/models/clip_vitb32_image.onnx"|' "$CONFIG_FILE"
+fi
+
+# Create working directory for captures/sessions
+DATA_DIR="/var/lib/cat-detector"
+install -d -o griswald -g griswald "$DATA_DIR"
+install -d -o griswald -g griswald "$DATA_DIR/captures"
+install -d -o griswald -g griswald "$DATA_DIR/captures/sessions"
 
 # Ensure ONNX Runtime library is discoverable via ldconfig
 if [ -d "$ORT_LIB_DIR" ]; then

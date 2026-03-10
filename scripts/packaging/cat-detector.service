@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=griswald
+WorkingDirectory=/var/lib/cat-detector
 Environment=ORT_DYLIB_PATH=/opt/cat-detector/lib/libonnxruntime.so
 ExecStart=/usr/local/bin/cat-detector run --config /etc/cat-detector/config.toml
 Restart=on-failure
