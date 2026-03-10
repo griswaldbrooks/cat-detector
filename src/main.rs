@@ -2,7 +2,10 @@ use cat_detector::detector::CatDetector;
 use cat_detector::{camera, config, detector, notifier, recorder, service, storage, web};
 
 use anyhow::{Context, Result};
+use camera::CameraCapture;
 use clap::{Parser, Subcommand};
+use notifier::Notifier;
+use recorder::VideoRecorder;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
@@ -118,28 +121,382 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_daemon(config_path: PathBuf) -> Result<()> {
-    info!("Loading configuration from {:?}", config_path);
-
-    let config = config::Config::load(&config_path)
-        .with_context(|| format!("Failed to load config from {:?}", config_path))?;
-
-    info!("Configuration loaded successfully");
-
-    // Setup shutdown signal handler
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutdown_rx_web = shutdown_rx.clone();
-
-    // Handle Ctrl+C
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Received Ctrl+C, initiating shutdown...");
-        let _ = shutdown_tx.send(true);
-    });
-
-    // Setup web state and frame channel if web is enabled
+struct DaemonContext {
+    stor: Arc<dyn storage::ImageStorage>,
+    notif: Arc<notifier::SignalNotifier>,
+    session_mgr: cat_detector::session::SessionManager,
+    video_recorder: recorder::FfmpegRecorder,
     #[cfg(feature = "web")]
-    let (web_state, frame_tx) = if config.web.enabled {
+    web_state: Option<Arc<RwLock<web::WebAppState>>>,
+}
+
+impl DaemonContext {
+    async fn handle_cat_entered(
+        &mut self,
+        frame: &image::DynamicImage,
+        config: &config::Config,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        info!("Cat entered at {}", timestamp);
+
+        // Start new session
+        self.session_mgr.start_session(timestamp);
+
+        // Start video recording
+        if let Err(e) = self
+            .video_recorder
+            .start_recording(&config.storage.output_dir, timestamp)
+        {
+            tracing::warn!("Failed to start recording: {}", e);
+        }
+
+        let saved = self
+            .stor
+            .save_image(frame, storage::ImageType::Entry, timestamp)
+            .await?;
+        info!("Saved entry image: {:?}", saved.path);
+
+        self.session_mgr.set_entry_image(saved.path.clone());
+
+        #[cfg(feature = "web")]
+        if let Some(ref state) = self.web_state {
+            let mut s = state.write().await;
+            s.add_capture(web::CaptureInfo::new(
+                saved.path.clone(),
+                timestamp,
+                storage::ImageType::Entry,
+            ));
+        }
+
+        if self.notif.is_enabled() {
+            if let Err(e) = self
+                .notif
+                .notify(notifier::NotificationEvent::CatEntered { timestamp })
+                .await
+            {
+                tracing::warn!("Failed to send entry notification: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_cat_exited(
+        &mut self,
+        frame: &image::DynamicImage,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        entry_time: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
+        info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
+
+        // Stop video recording
+        let video_path = match self.video_recorder.stop_recording() {
+            Ok(Some(vp)) => {
+                info!("Video saved to {:?}", vp);
+                self.session_mgr.set_video_path(vp.clone());
+                Some(vp)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("Failed to stop recording: {}", e);
+                None
+            }
+        };
+
+        let saved = self
+            .stor
+            .save_image(frame, storage::ImageType::Exit, timestamp)
+            .await?;
+        info!("Saved exit image: {:?}", saved.path);
+
+        self.session_mgr.set_exit_image(saved.path.clone());
+
+        // End and persist session
+        match self.session_mgr.end_session(timestamp) {
+            Ok(Some(session)) => {
+                info!(
+                    "Session {} completed: {}s, {} samples",
+                    session.id,
+                    session.duration_secs().unwrap_or(0),
+                    session.sample_images.len()
+                );
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("Failed to persist session: {}", e),
+        }
+
+        #[cfg(feature = "web")]
+        if let Some(ref state) = self.web_state {
+            let mut s = state.write().await;
+            s.add_capture(web::CaptureInfo::new(
+                saved.path.clone(),
+                timestamp,
+                storage::ImageType::Exit,
+            ));
+        }
+
+        if self.notif.is_enabled() {
+            if let Err(e) = self
+                .notif
+                .notify(notifier::NotificationEvent::CatExited {
+                    timestamp,
+                    duration_secs,
+                    video_path,
+                })
+                .await
+            {
+                tracing::warn!("Failed to send exit notification: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_sample_due(
+        &mut self,
+        frame: &image::DynamicImage,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        tracing::debug!("Sample due at {}", timestamp);
+
+        let saved = self
+            .stor
+            .save_image(frame, storage::ImageType::Sample, timestamp)
+            .await?;
+        tracing::debug!("Saved sample image: {:?}", saved.path);
+
+        self.session_mgr.add_sample_image(saved.path.clone());
+
+        #[cfg(feature = "web")]
+        if let Some(ref state) = self.web_state {
+            let mut s = state.write().await;
+            s.add_capture(web::CaptureInfo::new(
+                saved.path.clone(),
+                timestamp,
+                storage::ImageType::Sample,
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "web")]
+    async fn update_web_state(
+        &self,
+        frame: &image::DynamicImage,
+        detections: &[cat_detector::detector::Detection],
+        cat_detected: bool,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Some(ref state) = self.web_state {
+            let mut s = state.write().await;
+            s.update_frame(frame, detections);
+            s.cat_present = cat_detected;
+            if cat_detected {
+                s.last_detection = Some(timestamp);
+            }
+        }
+    }
+
+    #[cfg(feature = "web")]
+    async fn send_mjpeg_frame(
+        &self,
+        tx: &web::FrameSender,
+        now: tokio::time::Instant,
+        last_sent: &mut tokio::time::Instant,
+        interval: tokio::time::Duration,
+    ) {
+        if now.duration_since(*last_sent) >= interval {
+            if let Some(ref state) = self.web_state {
+                let s = state.read().await;
+                if let Some(ref frame_data) = s.latest_frame {
+                    let _ = tx.send(Some(frame_data.clone()));
+                    *last_sent = now;
+                }
+            }
+        }
+    }
+
+    fn record_frame(&mut self, frame: &image::DynamicImage) {
+        if self.video_recorder.is_recording() {
+            if let Err(e) = self.video_recorder.add_frame(frame) {
+                tracing::warn!("Failed to record frame: {}", e);
+            }
+        }
+    }
+
+    /// Runs detection and updates state. Returns `true` if detection succeeded.
+    async fn run_detection(
+        &self,
+        det: &Arc<dyn detector::CatDetector>,
+        frame: &image::DynamicImage,
+        latest_detections: &mut Vec<cat_detector::detector::Detection>,
+        cat_detected: &mut bool,
+    ) -> bool {
+        match det.detect(frame).await {
+            Ok(detections) => {
+                *cat_detected = detections.iter().any(|d| det.is_cat(d));
+                *latest_detections = detections;
+                true
+            }
+            Err(e) => {
+                tracing::warn!("Detector error (will retry): {}", e);
+                false
+            }
+        }
+    }
+
+    async fn dispatch_tracker_events(
+        &mut self,
+        tracker: &mut cat_detector::tracker::CatTracker,
+        cat_detected: bool,
+        frame: &image::DynamicImage,
+        config: &config::Config,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        use cat_detector::tracker::TrackerEvent;
+
+        let events = tracker.process_detection(cat_detected, timestamp);
+        for event in events {
+            match event {
+                TrackerEvent::CatEntered { timestamp } => {
+                    self.handle_cat_entered(frame, config, timestamp).await?;
+                }
+                TrackerEvent::CatExited {
+                    timestamp,
+                    entry_time,
+                } => {
+                    self.handle_cat_exited(frame, timestamp, entry_time).await?;
+                }
+                TrackerEvent::SampleDue { timestamp } => {
+                    self.handle_sample_due(frame, timestamp).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Captures a frame, applying exponential backoff on errors.
+/// Returns `Ok(Some(frame))` on success, `Ok(None)` if capture failed (should continue loop),
+/// or the sleep future completes and the loop should retry.
+async fn capture_with_backoff(
+    cam: &mut impl CameraCapture,
+    consecutive_errors: &mut u32,
+    base_interval: tokio::time::Duration,
+    max_backoff: tokio::time::Duration,
+) -> Option<image::DynamicImage> {
+    match cam.capture_frame().await {
+        Ok(f) => {
+            *consecutive_errors = 0;
+            Some(f)
+        }
+        Err(e) => {
+            *consecutive_errors += 1;
+            let backoff = base_interval * 2u32.saturating_pow((*consecutive_errors).min(6));
+            let backoff = backoff.min(max_backoff);
+            tracing::warn!(
+                "Camera error (retry in {:?}, {} consecutive): {}",
+                backoff,
+                consecutive_errors,
+                e
+            );
+            tokio::time::sleep(backoff).await;
+            None
+        }
+    }
+}
+
+fn init_notifier(config: &config::Config) -> Result<notifier::SignalNotifier> {
+    if config.notification.enabled {
+        let signal_path = config
+            .notification
+            .signal_cli_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/usr/local/bin/signal-cli"));
+        let recipient = config
+            .notification
+            .recipient
+            .clone()
+            .expect("Recipient required when notifications enabled");
+
+        let timezone = config
+            .notification
+            .timezone
+            .as_deref()
+            .map(notifier::parse_timezone)
+            .transpose()
+            .context("Invalid timezone in config")?;
+
+        Ok(notifier::SignalNotifier::new(
+            signal_path,
+            recipient,
+            config.notification.account.clone(),
+            config.notification.notify_on_enter,
+            config.notification.notify_on_exit,
+            config.notification.send_video,
+            std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
+            timezone,
+        )?)
+    } else {
+        Ok(notifier::SignalNotifier::disabled())
+    }
+}
+
+fn init_detector(config: &config::Config) -> Result<Arc<dyn detector::CatDetector>> {
+    let text_emb_path = config
+        .detector
+        .text_embeddings_path
+        .clone()
+        .unwrap_or_else(|| {
+            config
+                .detector
+                .model_path
+                .with_file_name("clip_text_embeddings.bin")
+        });
+    Ok(Arc::new(
+        detector::ClipDetector::new(
+            &config.detector.model_path,
+            &text_emb_path,
+            config.detector.confidence_threshold,
+            config.detector.cat_class_id,
+        )
+        .context("Failed to initialize CLIP detector")?,
+    ))
+}
+
+#[cfg(feature = "real-camera")]
+fn init_camera(config: &config::Config) -> Result<camera::V4L2Camera> {
+    camera::V4L2Camera::new(
+        &config.camera.device_path,
+        config.camera.frame_width,
+        config.camera.frame_height,
+        config.camera.fps,
+    )
+    .context("Failed to initialize camera")
+}
+
+#[cfg(not(feature = "real-camera"))]
+fn init_camera(config: &config::Config) -> Result<camera::StubCamera> {
+    camera::StubCamera::new(
+        &config.camera.device_path,
+        config.camera.frame_width,
+        config.camera.frame_height,
+        config.camera.fps,
+    )
+    .context("Failed to initialize camera")
+}
+
+#[cfg(feature = "web")]
+fn setup_web(
+    config: &config::Config,
+    shutdown_rx: watch::Receiver<bool>,
+) -> (
+    Option<Arc<RwLock<web::WebAppState>>>,
+    Option<web::FrameSender>,
+) {
+    if config.web.enabled {
         let mut web_app_state = web::WebAppState::with_dirs(
             config.storage.output_dir.join("sessions"),
             config.storage.output_dir.clone(),
@@ -167,8 +524,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         let web_config = config.web.clone();
         let web_state_clone = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run_server(&web_config, web_state_clone, rx, shutdown_rx_web).await
-            {
+            if let Err(e) = web::run_server(&web_config, web_state_clone, rx, shutdown_rx).await {
                 error!("Web server error: {}", e);
             }
         });
@@ -180,53 +536,36 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         (Some(state), Some(tx))
     } else {
         (None, None)
-    };
+    }
+}
 
-    #[cfg(not(feature = "web"))]
-    let (web_state, frame_tx): (
-        Option<Arc<RwLock<web::WebAppState>>>,
-        Option<web::FrameSender>,
-    ) = (None, None);
+async fn run_daemon(config_path: PathBuf) -> Result<()> {
+    info!("Loading configuration from {:?}", config_path);
+
+    let config = config::Config::load(&config_path)
+        .with_context(|| format!("Failed to load config from {:?}", config_path))?;
+
+    info!("Configuration loaded successfully");
+
+    // Setup shutdown signal handler
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Handle Ctrl+C
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received Ctrl+C, initiating shutdown...");
+        let _ = shutdown_tx.send(true);
+    });
+
+    // Setup web state and frame channel if web is enabled
+    #[cfg(feature = "web")]
+    let (web_state, frame_tx) = setup_web(&config, shutdown_rx.clone());
 
     // Initialize camera
-    #[cfg(feature = "real-camera")]
-    let mut cam = camera::V4L2Camera::new(
-        &config.camera.device_path,
-        config.camera.frame_width,
-        config.camera.frame_height,
-        config.camera.fps,
-    )
-    .context("Failed to initialize camera")?;
-
-    #[cfg(not(feature = "real-camera"))]
-    let mut cam = camera::StubCamera::new(
-        &config.camera.device_path,
-        config.camera.frame_width,
-        config.camera.frame_height,
-        config.camera.fps,
-    )
-    .context("Failed to initialize camera")?;
+    let mut cam = init_camera(&config)?;
 
     // Initialize detector
-    let text_emb_path = config
-        .detector
-        .text_embeddings_path
-        .clone()
-        .unwrap_or_else(|| {
-            config
-                .detector
-                .model_path
-                .with_file_name("clip_text_embeddings.bin")
-        });
-    let det: Arc<dyn detector::CatDetector> = Arc::new(
-        detector::ClipDetector::new(
-            &config.detector.model_path,
-            &text_emb_path,
-            config.detector.confidence_threshold,
-            config.detector.cat_class_id,
-        )
-        .context("Failed to initialize CLIP detector")?,
-    );
+    let det = init_detector(&config)?;
 
     // Initialize storage
     let stor = Arc::new(
@@ -239,39 +578,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     );
 
     // Initialize notifier
-    let notif = Arc::new(if config.notification.enabled {
-        let signal_path = config
-            .notification
-            .signal_cli_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/usr/local/bin/signal-cli"));
-        let recipient = config
-            .notification
-            .recipient
-            .clone()
-            .expect("Recipient required when notifications enabled");
-
-        let timezone = config
-            .notification
-            .timezone
-            .as_deref()
-            .map(notifier::parse_timezone)
-            .transpose()
-            .context("Invalid timezone in config")?;
-
-        notifier::SignalNotifier::new(
-            signal_path,
-            recipient,
-            config.notification.account.clone(),
-            config.notification.notify_on_enter,
-            config.notification.notify_on_exit,
-            config.notification.send_video,
-            std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
-            timezone,
-        )?
-    } else {
-        notifier::SignalNotifier::disabled()
-    });
+    let notif = Arc::new(init_notifier(&config)?);
 
     // Create tracker
     let mut tracker = cat_detector::tracker::CatTracker::new(
@@ -281,16 +588,27 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     );
 
     // Initialize session manager and video recorder
-    let mut session_mgr =
+    let session_mgr =
         cat_detector::session::SessionManager::new(config.storage.output_dir.join("sessions"));
-    let mut video_recorder = recorder::FfmpegRecorder::new(
+    let video_recorder = recorder::FfmpegRecorder::new(
         "ffmpeg",
         config.camera.frame_width,
         config.camera.frame_height,
         config.camera.fps,
     );
 
+    // Create daemon context
+    let mut ctx = DaemonContext {
+        stor: stor.clone(),
+        notif: notif.clone(),
+        session_mgr,
+        video_recorder,
+        #[cfg(feature = "web")]
+        web_state: web_state.clone(),
+    };
+
     // Mark as detecting in web state
+    #[cfg(feature = "web")]
     if let Some(ref state) = web_state {
         let mut s = state.write().await;
         s.detecting = true;
@@ -306,8 +624,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let mut last_detection_time = tokio::time::Instant::now() - detection_interval; // detect on first frame
 
     // MJPEG stream throttling
+    #[cfg(feature = "web")]
     let stream_interval =
         tokio::time::Duration::from_millis(1000 / config.web.stream_fps.max(1) as u64);
+    #[cfg(feature = "web")]
     let mut last_frame_sent = tokio::time::Instant::now() - stream_interval;
 
     // Exponential backoff for error recovery
@@ -328,220 +648,50 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             break;
         }
 
-        // Capture frame every cycle
-        use camera::CameraCapture;
-        let frame = match cam.capture_frame().await {
-            Ok(f) => f,
-            Err(e) => {
-                consecutive_errors += 1;
-                let backoff = base_interval * 2u32.saturating_pow(consecutive_errors.min(6));
-                let backoff = backoff.min(max_backoff);
-                tracing::warn!(
-                    "Camera error (retry in {:?}, {} consecutive): {}",
-                    backoff,
-                    consecutive_errors,
-                    e
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
-            }
+        // Capture frame with exponential backoff on errors
+        let Some(frame) = capture_with_backoff(
+            &mut cam,
+            &mut consecutive_errors,
+            base_interval,
+            max_backoff,
+        )
+        .await
+        else {
+            continue;
         };
-
-        // Reset backoff on successful capture
-        consecutive_errors = 0;
 
         let timestamp = chrono::Utc::now();
         let now = tokio::time::Instant::now();
 
         // Run detection only when interval has elapsed
         let detection_due = now.duration_since(last_detection_time) >= detection_interval;
-        if detection_due {
-            match det.detect(&frame).await {
-                Ok(detections) => {
-                    cat_detected = detections.iter().any(|d| det.is_cat(d));
-                    latest_detections = detections;
-                    last_detection_time = now;
-                }
-                Err(e) => {
-                    tracing::warn!("Detector error (will retry): {}", e);
-                }
-            }
+        if detection_due
+            && ctx
+                .run_detection(&det, &frame, &mut latest_detections, &mut cat_detected)
+                .await
+        {
+            last_detection_time = now;
         }
 
         // Update web state with every frame (smoother MJPEG stream)
-        if let Some(ref state) = web_state {
-            let mut s = state.write().await;
-            s.update_frame(&frame, &latest_detections);
-            s.cat_present = cat_detected;
-            if cat_detected {
-                s.last_detection = Some(timestamp);
-            }
-        }
+        #[cfg(feature = "web")]
+        ctx.update_web_state(&frame, &latest_detections, cat_detected, timestamp)
+            .await;
 
         // Send frame to MJPEG stream (throttled by stream_fps)
+        #[cfg(feature = "web")]
         if let Some(ref tx) = frame_tx {
-            if now.duration_since(last_frame_sent) >= stream_interval {
-                if let Some(ref state) = web_state {
-                    let s = state.read().await;
-                    if let Some(ref frame_data) = s.latest_frame {
-                        let _ = tx.send(Some(frame_data.clone()));
-                        last_frame_sent = now;
-                    }
-                }
-            }
+            ctx.send_mjpeg_frame(tx, now, &mut last_frame_sent, stream_interval)
+                .await;
         }
 
         // Add every frame to video recorder if recording
-        {
-            use recorder::VideoRecorder;
-            if video_recorder.is_recording() {
-                if let Err(e) = video_recorder.add_frame(&frame) {
-                    tracing::warn!("Failed to record frame: {}", e);
-                }
-            }
-        }
+        ctx.record_frame(&frame);
 
         // Process tracker and handle events only on detection frames
         if detection_due {
-            let events = tracker.process_detection(cat_detected, timestamp);
-
-            for event in events {
-                use cat_detector::tracker::TrackerEvent;
-                use notifier::Notifier;
-                use storage::ImageStorage;
-
-                match event {
-                    TrackerEvent::CatEntered { timestamp } => {
-                        info!("Cat entered at {}", timestamp);
-
-                        // Start new session
-                        session_mgr.start_session(timestamp);
-
-                        // Start video recording
-                        {
-                            use recorder::VideoRecorder;
-                            if let Err(e) = video_recorder
-                                .start_recording(&config.storage.output_dir, timestamp)
-                            {
-                                tracing::warn!("Failed to start recording: {}", e);
-                            }
-                        }
-
-                        let saved = stor
-                            .save_image(&frame, storage::ImageType::Entry, timestamp)
-                            .await?;
-                        info!("Saved entry image: {:?}", saved.path);
-
-                        session_mgr.set_entry_image(saved.path.clone());
-
-                        if let Some(ref state) = web_state {
-                            let mut s = state.write().await;
-                            s.add_capture(web::CaptureInfo::new(
-                                saved.path.clone(),
-                                timestamp,
-                                storage::ImageType::Entry,
-                            ));
-                        }
-
-                        if notif.is_enabled() {
-                            if let Err(e) = notif
-                                .notify(notifier::NotificationEvent::CatEntered { timestamp })
-                                .await
-                            {
-                                tracing::warn!("Failed to send entry notification: {}", e);
-                            }
-                        }
-                    }
-
-                    TrackerEvent::CatExited {
-                        timestamp,
-                        entry_time,
-                    } => {
-                        let duration_secs = (timestamp - entry_time).num_seconds().max(0) as u64;
-                        info!("Cat exited at {} (duration: {}s)", timestamp, duration_secs);
-
-                        // Stop video recording
-                        let video_path = {
-                            use recorder::VideoRecorder;
-                            match video_recorder.stop_recording() {
-                                Ok(Some(vp)) => {
-                                    info!("Video saved to {:?}", vp);
-                                    session_mgr.set_video_path(vp.clone());
-                                    Some(vp)
-                                }
-                                Ok(None) => None,
-                                Err(e) => {
-                                    tracing::warn!("Failed to stop recording: {}", e);
-                                    None
-                                }
-                            }
-                        };
-
-                        let saved = stor
-                            .save_image(&frame, storage::ImageType::Exit, timestamp)
-                            .await?;
-                        info!("Saved exit image: {:?}", saved.path);
-
-                        session_mgr.set_exit_image(saved.path.clone());
-
-                        // End and persist session
-                        match session_mgr.end_session(timestamp) {
-                            Ok(Some(session)) => {
-                                info!(
-                                    "Session {} completed: {}s, {} samples",
-                                    session.id,
-                                    session.duration_secs().unwrap_or(0),
-                                    session.sample_images.len()
-                                );
-                            }
-                            Ok(None) => {}
-                            Err(e) => tracing::warn!("Failed to persist session: {}", e),
-                        }
-
-                        if let Some(ref state) = web_state {
-                            let mut s = state.write().await;
-                            s.add_capture(web::CaptureInfo::new(
-                                saved.path.clone(),
-                                timestamp,
-                                storage::ImageType::Exit,
-                            ));
-                        }
-
-                        if notif.is_enabled() {
-                            if let Err(e) = notif
-                                .notify(notifier::NotificationEvent::CatExited {
-                                    timestamp,
-                                    duration_secs,
-                                    video_path,
-                                })
-                                .await
-                            {
-                                tracing::warn!("Failed to send exit notification: {}", e);
-                            }
-                        }
-                    }
-
-                    TrackerEvent::SampleDue { timestamp } => {
-                        tracing::debug!("Sample due at {}", timestamp);
-
-                        let saved = stor
-                            .save_image(&frame, storage::ImageType::Sample, timestamp)
-                            .await?;
-                        tracing::debug!("Saved sample image: {:?}", saved.path);
-
-                        session_mgr.add_sample_image(saved.path.clone());
-
-                        if let Some(ref state) = web_state {
-                            let mut s = state.write().await;
-                            s.add_capture(web::CaptureInfo::new(
-                                saved.path.clone(),
-                                timestamp,
-                                storage::ImageType::Sample,
-                            ));
-                        }
-                    }
-                }
-            }
+            ctx.dispatch_tracker_events(&mut tracker, cat_detected, &frame, &config, timestamp)
+                .await?;
         }
 
         // Wait for next frame interval or shutdown
@@ -572,35 +722,7 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
         );
     }
 
-    let signal_path = config
-        .notification
-        .signal_cli_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/signal-cli"));
-    let recipient = config
-        .notification
-        .recipient
-        .clone()
-        .expect("Recipient required when notifications enabled");
-
-    let timezone = config
-        .notification
-        .timezone
-        .as_deref()
-        .map(notifier::parse_timezone)
-        .transpose()
-        .context("Invalid timezone in config")?;
-
-    let notif = notifier::SignalNotifier::new(
-        signal_path,
-        recipient,
-        config.notification.account.clone(),
-        true,
-        true,
-        config.notification.send_video,
-        std::time::Duration::from_secs(config.notification.attachment_timeout_secs),
-        timezone,
-    )?;
+    let notif = init_notifier(&config)?;
 
     // Verify signal-cli is installed
     println!("Checking signal-cli...");
@@ -613,7 +735,6 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
 
     // Send a test message
     println!("Sending test notification...");
-    use notifier::Notifier;
     notif
         .notify(notifier::NotificationEvent::CatEntered {
             timestamp: chrono::Utc::now(),
@@ -627,9 +748,6 @@ async fn test_notification(config_path: PathBuf) -> Result<()> {
 
 #[cfg(feature = "real-camera")]
 async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
-    use camera::CameraCapture;
-    use detector::CatDetector;
-
     info!("Testing camera: {}", device);
 
     // Initialize camera
