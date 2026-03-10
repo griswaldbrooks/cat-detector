@@ -30,6 +30,9 @@ config.toml
 .pixi/*
 !.pixi/config.toml
 
+# Debian packages
+*.deb
+
 # Docusaurus
 /website/node_modules/
 /website/build/
