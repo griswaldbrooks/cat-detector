@@ -106,6 +106,8 @@ fpm \
     --depends "cat-detector-models = ${VERSION}" \
     --config-files /etc/cat-detector/config.example.toml \
     --deb-systemd "$PROJECT_DIR/scripts/packaging/cat-detector.service" \
+    --deb-systemd-enable \
+    --deb-systemd-auto-start \
     --after-install "$PROJECT_DIR/scripts/packaging/postinst.sh" \
     --after-upgrade "$PROJECT_DIR/scripts/packaging/postinst.sh" \
     --before-remove "$PROJECT_DIR/scripts/packaging/prerm.sh" \
