@@ -7,8 +7,18 @@ CONFIG_FILE="${CONFIG_DIR}/config.toml"
 LDCONFIG_FILE="/etc/ld.so.conf.d/cat-detector.conf"
 ORT_LIB_DIR="/opt/cat-detector/lib"
 
-# Create config.toml from template if it doesn't exist
-if [ ! -f "$CONFIG_FILE" ]; then
+# Migrate legacy config from rsync deployment if it exists and no .deb config yet
+LEGACY_CONFIG="/home/griswald/cat-detector/config.toml"
+if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG" ]; then
+    cp "$LEGACY_CONFIG" "$CONFIG_FILE"
+    # Update paths from relative (rsync layout) to absolute (.deb layout)
+    sed -i 's|^model_path = "models/clip_vitb32_image.onnx"$|model_path = "/opt/cat-detector/models/clip_vitb32_image.onnx"|' "$CONFIG_FILE"
+    sed -i 's|^# text_embeddings_path = "models/clip_text_embeddings.bin"$|text_embeddings_path = "/opt/cat-detector/models/clip_text_embeddings.bin"|' "$CONFIG_FILE"
+    sed -i 's|^text_embeddings_path = "models/clip_text_embeddings.bin"$|text_embeddings_path = "/opt/cat-detector/models/clip_text_embeddings.bin"|' "$CONFIG_FILE"
+    sed -i 's|^output_dir = "captures"$|output_dir = "/var/lib/cat-detector/captures"|' "$CONFIG_FILE"
+    echo "Migrated config from legacy deployment at ${LEGACY_CONFIG}"
+# Create config.toml from template if no config exists at all
+elif [ ! -f "$CONFIG_FILE" ]; then
     if [ -f "$CONFIG_TEMPLATE" ]; then
         cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
         # Update model path to installed location

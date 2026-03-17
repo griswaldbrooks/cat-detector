@@ -65,7 +65,41 @@ Default model is CLIP ViT-B/32 (recommended for overhead camera angles). Models 
 
 Models go in `models/` relative to the working directory.
 
-## Deploy Script
+## Deployment Methods
+
+### Method 1: .deb packages (recommended)
+
+Build and deploy using Debian packages. Requires [fpm](https://fpm.readthedocs.io/) (`gem install fpm`) on the build machine.
+
+```bash
+# Build .deb packages (on build machine)
+./scripts/build-deb.sh
+
+# Copy to target
+scp cat-detector_*.deb cat-detector-models_*.deb TARGET_HOST:
+
+# Install on target (first time or upgrade)
+ssh TARGET_HOST "sudo dpkg -i cat-detector-models_*.deb cat-detector_*.deb && sudo apt-get install -f"
+```
+
+This installs:
+- Binary to `/usr/local/bin/cat-detector`
+- ONNX runtime to `/opt/cat-detector/lib/`
+- Models to `/opt/cat-detector/models/`
+- Config template to `/etc/cat-detector/config.example.toml`
+- Systemd service (enabled on boot)
+- Data directory at `/var/lib/cat-detector/`
+
+The postinst script automatically:
+- Migrates `~/cat-detector/config.toml` from legacy rsync deployment if present (preserves notification settings, credentials, thresholds — only updates paths to .deb locations)
+- If no legacy config exists, creates `/etc/cat-detector/config.toml` from template (**notifications disabled by default** — you must edit the config to enable them)
+- Registers ONNX runtime with ldconfig
+- Creates data directories with correct ownership
+- Migrates captures from legacy rsync deployments (if found)
+
+**Sudoers**: The deploy user needs passwordless sudo for dpkg/apt — see [Passwordless sudo](#passwordless-sudo-recommended).
+
+### Method 2: rsync (legacy)
 
 ```bash
 ./scripts/deploy.sh [TARGET_HOST]  # default: catbox
@@ -144,7 +178,40 @@ journalctl -u cat-detector -f    # follow logs
 
 ### Passwordless sudo (recommended)
 
-Add to `/etc/sudoers.d/cat-detector`:
+Add to `/etc/sudoers.d/cat-detector` using `sudo visudo -f /etc/sudoers.d/cat-detector`:
+
+#### For .deb package deployment (recommended)
+
+```
+# Service management
+username ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cat-detector, \
+    /usr/bin/systemctl stop cat-detector, \
+    /usr/bin/systemctl start cat-detector, \
+    /usr/bin/systemctl status cat-detector, \
+    /usr/bin/systemctl is-active cat-detector, \
+    /usr/bin/systemctl daemon-reload
+
+# Package management (install/upgrade/remove .deb packages)
+username ALL=(ALL) NOPASSWD: /usr/bin/dpkg -i *, \
+    /usr/bin/dpkg -r *, \
+    /usr/bin/dpkg --purge *
+
+# Dependency resolution (after dpkg -i)
+username ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -f
+
+# Shared library cache (postinst registers ONNX runtime via ldconfig)
+username ALL=(ALL) NOPASSWD: /sbin/ldconfig
+
+# Config management (stage to /tmp, then copy)
+username ALL=(ALL) NOPASSWD: /usr/bin/cp /tmp/cat-detector-config.toml /etc/cat-detector/config.toml
+
+# Cleanup legacy service file (from rsync-based deployments)
+username ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/systemd/system/cat-detector.service
+```
+
+#### For legacy rsync deployment (minimal)
+
+If using `scripts/deploy.sh` instead of .deb packages, only service management is needed:
 
 ```
 username ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cat-detector, \

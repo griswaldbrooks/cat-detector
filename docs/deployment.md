@@ -86,7 +86,8 @@ This installs:
 - Data directory at `/var/lib/cat-detector/`
 
 The postinst script automatically:
-- Creates `/etc/cat-detector/config.toml` from template (first install only)
+- Migrates `~/cat-detector/config.toml` from legacy rsync deployment if present (preserves notification settings, credentials, thresholds — only updates paths to .deb locations)
+- If no legacy config exists, creates `/etc/cat-detector/config.toml` from template (**notifications disabled by default** — you must edit the config to enable them)
 - Registers ONNX runtime with ldconfig
 - Creates data directories with correct ownership
 - Migrates captures from legacy rsync deployments (if found)
@@ -195,6 +196,9 @@ username ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -f
 
 # Shared library cache (postinst registers ONNX runtime via ldconfig)
 username ALL=(ALL) NOPASSWD: /sbin/ldconfig
+
+# Config management (stage to /tmp, then copy)
+username ALL=(ALL) NOPASSWD: /usr/bin/cp /tmp/cat-detector-config.toml /etc/cat-detector/config.toml
 
 # Cleanup legacy service file (from rsync-based deployments)
 username ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/systemd/system/cat-detector.service

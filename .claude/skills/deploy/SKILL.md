@@ -31,8 +31,9 @@ ssh catbox "sudo -n systemctl status cat-detector"
 ```
 
 ### Notes
-- First install creates config at `/etc/cat-detector/config.toml` from template
-- Upgrades preserve config, restart service automatically
+- First install migrates config from legacy `~/cat-detector/config.toml` if present (preserves notification settings, etc.)
+- If no legacy config exists, creates `/etc/cat-detector/config.toml` from template (notifications disabled by default — must be configured manually)
+- Upgrades preserve existing `/etc/cat-detector/config.toml`, restart service automatically
 - Binary installs to `/usr/local/bin/cat-detector`
 - Models install to `/opt/cat-detector/models/`
 - Captures/sessions stored at `/var/lib/cat-detector/captures/`
