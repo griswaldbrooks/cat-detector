@@ -1,0 +1,139 @@
+// CLIP Zero-Shot Detection Pipeline
+// Catppuccin Mocha color palette
+// Base: #1e1e2e, Surface0: #313244, Surface1: #45475a, Surface2: #585b70
+// Text: #cdd6f4, Subtext: #a6adc8
+// Blue: #89b4fa, Lavender: #b4befe, Mauve: #cba6f7, Pink: #f5c2e7
+// Green: #a6e3a1, Teal: #94e2d5, Yellow: #f9e2af, Peach: #fab387
+// Red: #f38ba8, Rosewater: #f5e0dc, Flamingo: #f2cdcd
+
+digraph clip_pipeline {
+    rankdir=TB;
+    bgcolor="#1e1e2e";
+    fontname="Helvetica";
+    fontcolor="#cdd6f4";
+    node [fontname="Helvetica", fontcolor="#cdd6f4", color="#585b70", penwidth=2];
+    edge [fontname="Helvetica", fontcolor="#a6adc8", color="#585b70", penwidth=1.5];
+    pad=0.5;
+    nodesep=0.5;
+    ranksep=0.6;
+
+    // Input
+    camera [
+        label="Camera Frame\n640x480 RGB",
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#89b4fa"
+    ];
+
+    // Step 1: Preprocessing
+    preprocess [
+        label=<<b>1. Preprocess</b><br/>Resize shortest side → 224<br/>Center crop 224×224<br/>Normalize (CLIP means/stds)<br/>Reshape to [1, 3, 224, 224]>,
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#89b4fa"
+    ];
+
+    // Step 2: Image Encoder
+    encoder [
+        label=<<b>2. CLIP Image Encoder</b><br/>ViT-B/32, 88M params<br/>ONNX Runtime (~21ms on i3-6100T)>,
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#cba6f7"
+    ];
+
+    // Image embedding output
+    img_emb [
+        label="512-dim image embedding\n(L2 normalized)",
+        shape=ellipse,
+        style="filled",
+        fillcolor="#45475a",
+        color="#b4befe"
+    ];
+
+    // Text embeddings (pre-computed)
+    text_emb [
+        label=<<b>Text Embeddings</b> (pre-computed, 6KB)<br/><br/>[0] "a photo of a cat"<br/>[1] "a photo of an empty room"<br/>[2] "a photo of a person"<br/><br/>3 × 512-dim vectors (L2 normalized)>,
+        shape=box,
+        style="rounded,filled,dashed",
+        fillcolor="#313244",
+        color="#f9e2af"
+    ];
+
+    // Step 3: Cosine similarity
+    cosine [
+        label=<<b>3. Cosine Similarity</b><br/>dot(image, text<sub>i</sub>) for each class>,
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#94e2d5"
+    ];
+
+    // Similarity scores
+    sims [
+        label="3 similarity scores\ncat_sim, room_sim, person_sim",
+        shape=ellipse,
+        style="filled",
+        fillcolor="#45475a",
+        color="#b4befe"
+    ];
+
+    // Step 4: Softmax
+    softmax [
+        label=<<b>4. Softmax (τ=100)</b><br/>P(cat) = exp(cat_sim × 100) / Σ exp(sim<sub>i</sub> × 100)<br/>Amplifies small Δsim into confident probabilities>,
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#fab387"
+    ];
+
+    // Cat probability
+    prob [
+        label="cat probability",
+        shape=ellipse,
+        style="filled",
+        fillcolor="#45475a",
+        color="#b4befe"
+    ];
+
+    // Step 5: Threshold
+    threshold [
+        label=<<b>5. Threshold</b><br/>cat_prob ≥ 0.5?>,
+        shape=diamond,
+        style="filled",
+        fillcolor="#313244",
+        color="#f38ba8"
+    ];
+
+    // Outputs
+    detected [
+        label="Detection\nclass=cat, conf=P(cat)\nbbox=full frame",
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#a6e3a1"
+    ];
+
+    not_detected [
+        label="No Detection",
+        shape=box,
+        style="rounded,filled",
+        fillcolor="#313244",
+        color="#585b70"
+    ];
+
+    // Edges
+    camera -> preprocess [color="#89b4fa"];
+    preprocess -> encoder [color="#89b4fa"];
+    encoder -> img_emb [color="#cba6f7"];
+    img_emb -> cosine [color="#b4befe"];
+    text_emb -> cosine [color="#f9e2af", style=dashed, label="  loaded once\n  at startup", fontsize=10];
+    cosine -> sims [color="#94e2d5"];
+    sims -> softmax [color="#b4befe"];
+    softmax -> prob [color="#fab387"];
+    prob -> threshold [color="#b4befe"];
+    threshold -> detected [label="  yes", color="#a6e3a1", fontcolor="#a6e3a1"];
+    threshold -> not_detected [label="  no", color="#585b70", fontcolor="#585b70"];
+}
