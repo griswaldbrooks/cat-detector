@@ -15,47 +15,7 @@ See the [Model Evaluation](./model-evaluation.md) for detailed benchmark compari
 
 ## Pipeline Overview
 
-```
-                    ┌──────────────────────┐
-  Camera frame      │  1. Preprocess       │
-  (640x480 RGB) ──> │  Resize + crop +     │
-                    │  normalize to        │
-                    │  224x224 NCHW tensor  │
-                    └─────────┬────────────┘
-                              │
-                              v
-                    ┌──────────────────────┐
-                    │  2. CLIP Image        │
-                    │  Encoder (ONNX)       │     Pre-computed at build time:
-                    │  ViT-B/32, 88M params │     ┌──────────────────────────┐
-                    └─────────┬────────────┘     │  Text embeddings (6KB)   │
-                              │                   │  "a photo of a cat"      │
-                    512-dim image embedding        │  "a photo of an empty    │
-                              │                   │   room"                  │
-                              v                   │  "a photo of a person"   │
-                    ┌──────────────────────┐     └────────────┬─────────────┘
-                    │  3. Cosine Similarity │                  │
-                    │  image vs each text   │ <───────────────┘
-                    │  embedding            │   3 x 512-dim text embeddings
-                    └─────────┬────────────┘
-                              │
-                       3 similarity scores
-                              │
-                              v
-                    ┌──────────────────────┐
-                    │  4. Softmax (τ=100)   │
-                    │  Convert similarities │
-                    │  to probabilities     │
-                    └─────────┬────────────┘
-                              │
-                       cat probability
-                              │
-                              v
-                    ┌──────────────────────┐
-                    │  5. Threshold (0.5)   │
-                    │  cat_prob >= 0.5?     │──> Detection or no detection
-                    └──────────────────────┘
-```
+![CLIP Detection Pipeline](/img/clip-pipeline.png)
 
 ## Step by Step
 
@@ -97,24 +57,25 @@ This produces one similarity score per class:
 - `room_sim` — similarity to "a photo of an empty room"
 - `person_sim` — similarity to "a photo of a person"
 
-Typical values:
-- Cat present: `cat_sim ≈ 0.28`, `room_sim ≈ 0.20`, `person_sim ≈ 0.18`
-- Empty room: `cat_sim ≈ 0.19`, `room_sim ≈ 0.27`, `person_sim ≈ 0.20`
-- Person present: `cat_sim ≈ 0.19`, `room_sim ≈ 0.20`, `person_sim ≈ 0.26`
-
-The differences are small in absolute terms, but the softmax step amplifies them.
-
 ### 4. Softmax with Temperature
 
 The raw similarity scores are converted to probabilities using softmax with a high temperature (τ = 100):
 
 ```
-cat_prob = exp((cat_sim - max_sim) × 100) / Σ exp((sim_i - max_sim) × 100)
+cat_prob = exp((cat_sim - max_sim) × τ) / Σ exp((sim_i - max_sim) × τ)
 ```
 
-The temperature of 100 (matching CLIP's learned `logit_scale`) amplifies small differences in cosine similarity into confident probability distributions. A 0.08 difference in similarity becomes a 97%+ probability.
+The temperature of 100 (matching CLIP's learned `logit_scale`) amplifies small differences in cosine similarity into confident probability distributions. The `max_sim` subtraction is for numerical stability (prevents overflow in `exp()`).
 
-The `max_sim` subtraction is for numerical stability (prevents overflow in `exp()`).
+**How temperature affects confidence:**
+
+| Scenario | cat_sim | room_sim | Δ | τ=1 cat_prob | τ=100 cat_prob |
+|---|---|---|---|---|---|
+| Clear cat | 0.247 | 0.209 | 0.038 | 51.0% | 96.8% |
+| Dirty litter box | 0.212 | 0.207 | 0.005 | 50.1% | 55.7% |
+| Empty room | 0.213 | 0.234 | -0.021 | 49.5% | 9.7% |
+
+At τ=1, all predictions are near 50% — useless. At τ=100, clear cases become very confident (96.8%), but borderline cases like the dirty litter box also get pushed just over the threshold (55.7%).
 
 ### 5. Thresholding
 
@@ -124,6 +85,38 @@ If `cat_prob >= confidence_threshold` (default 0.5), a `Detection` is returned w
 - `bbox`: full frame (CLIP classifies the whole image, not a region)
 
 If below threshold, an empty detection list is returned.
+
+## Benchmark Results
+
+*All values computed on 2026-03-18 using the current 3-class text embeddings and CLIP ViT-B/32.*
+
+### Per-Image Classification
+
+| Image | cat_sim | room_sim | person_sim | cat_prob | Result | Correct? |
+|---|---|---|---|---|---|---|
+| cat1.jpg (stock, side-angle) | 0.2997 | 0.1637 | 0.2521 | 99.2% | CAT | ✅ |
+| cat_overhead_litterbot1.jpg | 0.2463 | 0.1845 | 0.2002 | 98.8% | CAT | ✅ |
+| cat_overhead_tabby1.jpg | 0.2471 | 0.2089 | 0.2016 | 96.8% | CAT | ✅ |
+| no_cat_overhead.jpg | 0.2125 | 0.2343 | 0.2026 | 9.7% | — | ✅ |
+| person_overhead_1.jpg | 0.1965 | 0.1985 | 0.2280 | 3.9% | — | ✅ |
+| **litter_box_dirty_overhead_1.jpg** | **0.2123** | **0.2070** | **0.1964** | **55.7%** | **CAT** | ❌ FP |
+| **litter_robot_moving_overhead_1.jpg** | **0.2350** | **0.2145** | **0.1953** | **87.2%** | **CAT** | ❌ FP |
+| **person_overhead_catbox_1.jpg** | **0.2216** | **0.1777** | **0.2100** | **75.3%** | **CAT** | ❌ FP |
+| **cat_with_litter_box_overhead_1.jpg** | **0.2131** | **0.2103** | **0.2025** | **47.6%** | **—** | ❌ FN |
+
+**Summary**: 5/9 correct, 3 false positives, 1 false negative. The false positives occur because there is no text embedding for "litter box" — scenes containing litter boxes are slightly more similar to "a photo of a cat" than to "a photo of an empty room", and the high temperature amplifies this tiny difference into a confident (wrong) prediction.
+
+### Known Limitations
+
+1. **No litter box class**: The 3-class system has no representation for litter boxes, litter robots, or other objects common in the deployment environment. Scenes with these objects default to whichever existing class is closest.
+
+2. **Temperature sensitivity**: With τ=100, a cosine similarity difference as small as 0.005 (dirty litter box) becomes a 55.7% confident prediction — just enough to cross the threshold.
+
+3. **Overhead person from catbox**: The person class was trained with the text "a photo of a person" which may not match the overhead perspective well. The catbox person image scores higher on cat (0.222) than person (0.210).
+
+4. **Cat with litter box**: When a cat is present alongside a litter box, the embeddings are nearly equal across all classes (0.213/0.210/0.203), resulting in a 47.6% cat probability — just below the 0.5 threshold.
+
+These limitations motivate the [few-shot prototype approach](./few-shot-detection.md) which uses representative images from the actual deployment environment instead of generic text descriptions.
 
 ## Text Embeddings
 
@@ -137,7 +130,27 @@ The text side of CLIP is pre-computed offline, not run at inference time. This i
 | 1 | "a photo of an empty room" | Negative — baseline for no activity |
 | 2 | "a photo of a person" | Negative — prevents people triggering cat detection |
 
-The person class was added after deployment showed that people walking by the camera could occasionally produce elevated cat similarity scores. With the 3-class system, people are correctly classified with 73-95% person probability.
+The person class was added after deployment showed that people walking by the camera could occasionally produce elevated cat similarity scores. With the 3-class system, people are correctly classified with 73-95% person probability (though overhead angles from catbox can still cause misclassification — see benchmarks above).
+
+### Text Embedding Similarity Matrix
+
+The three text embeddings are fairly similar to each other (all above 0.81), which means they occupy a relatively small region of the 512-dimensional embedding space:
+
+| | cat | room | person |
+|---|---|---|---|
+| **cat** | 1.0000 | 0.8149 | 0.8947 |
+| **room** | 0.8149 | 1.0000 | 0.8368 |
+| **person** | 0.8947 | 0.8368 | 1.0000 |
+
+**L2 distances** (lower = more similar):
+
+| | cat | room | person |
+|---|---|---|---|
+| **cat** | 0 | 0.6085 | 0.4588 |
+| **room** | 0.6085 | 0 | 0.5713 |
+| **person** | 0.4588 | 0.5713 | 0 |
+
+Note that "cat" and "person" are the closest pair (L2=0.4588), while "cat" and "room" are the most distant (L2=0.6085). This makes intuitive sense — cats and people are both living beings, while an empty room is semantically different from both.
 
 ### Binary Format
 
@@ -150,6 +163,44 @@ Text embeddings are stored in `models/clip_text_embeddings.bin` (6 KB, tracked i
 [embed_1: f32 × dim]  # "a photo of an empty room" (negative)
 [embed_2: f32 × dim]  # "a photo of a person" (negative)
 ```
+
+<details>
+<summary>Raw text embedding vectors (512 dimensions each)</summary>
+
+**"a photo of a cat"** (index 0):
+```
+ 0.014839  0.006996 -0.023371 -0.021110 -0.018464  0.019585 -0.030305 -0.074684
+-0.017338  0.018549 -0.007272 -0.057772  0.018357 -0.009701  0.013113  0.013050
+ 0.023123 -0.017145 -0.008487  0.027411  0.060565  0.015679  0.043362 -0.002796
+-0.023998  0.018364  0.023734  0.061723 -0.022451 -0.022118  0.021570  0.018090
+ 0.014357  0.046030 -0.020915 -0.017416  0.024183 -0.002612  0.022596  0.022664
+-0.009123 -0.011028  0.026837  0.011385  0.015528  0.008279 -0.024035  0.003048
+... (512 values total)
+```
+
+**"a photo of an empty room"** (index 1):
+```
+-0.035613  0.026705 -0.008820  0.009752 -0.003528 -0.006282  0.016475 -0.081894
+-0.023054 -0.003041 -0.007691 -0.051163  0.005598 -0.002510  0.028033 -0.041102
+-0.038936  0.006916  0.026500  0.048828  0.043612  0.005480  0.034588 -0.032941
+-0.016236  0.028811  0.025801  0.007362 -0.007014 -0.046107 -0.001501  0.015215
+-0.014104  0.028420 -0.071122 -0.028660  0.019562 -0.010183 -0.021407 -0.014782
+-0.001861 -0.033285  0.027487 -0.007759  0.054028  0.018422 -0.012138  0.005854
+... (512 values total)
+```
+
+**"a photo of a person"** (index 2):
+```
+-0.000751  0.024512 -0.006577  0.012351  0.006939 -0.024575 -0.011932 -0.078067
+-0.005109  0.016693 -0.021322 -0.034124  0.019928 -0.001946  0.014360 -0.009200
+ 0.055922  0.024275 -0.012183 -0.003026  0.082108  0.028157  0.017819 -0.032328
+-0.021158  0.000695  0.006157  0.053323 -0.028469 -0.001919  0.022747  0.009145
+-0.023504  0.004503 -0.006197 -0.041314  0.007477 -0.017493 -0.004094  0.016229
+-0.025926 -0.007087  0.007618  0.041891  0.019979  0.033560 -0.024059  0.022099
+... (512 values total)
+```
+
+</details>
 
 ### Regenerating Embeddings
 
@@ -176,3 +227,13 @@ This uses the original OpenAI CLIP Python package (via pixi's `clip` environment
 | **Adding classes** | Change text prompts, regenerate embeddings | Retrain the model |
 
 The key tradeoff: CLIP can't tell you *where* the cat is in the frame, only that a cat is present. For cat-detector's use case (entrance/exit monitoring), this is sufficient.
+
+## Reproducing These Results
+
+The benchmark values on this page were computed with:
+
+```bash
+pixi run python scripts/compute_doc_values.py
+```
+
+This script runs the CLIP image encoder on representative test images and prints cosine similarities, softmax probabilities, and raw embedding vectors. Output is saved to `scripts/doc_values_output.txt`.
