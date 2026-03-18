@@ -336,7 +336,10 @@ pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
         .route("/api/system-info", get(system_info_handler))
         .route("/api/captures", get(captures_handler))
         .route("/api/sessions", get(sessions_api_handler))
-        .route("/api/sessions/:id", get(session_detail_api_handler))
+        .route(
+            "/api/sessions/:id",
+            get(session_detail_api_handler).delete(delete_session_handler),
+        )
         .route("/api/frame", get(frame_handler))
         .route("/captures/:filename", get(serve_capture_file))
         .route("/api/stream", get(move || stream_handler(frame_rx.clone())))
@@ -456,6 +459,27 @@ async fn session_detail_api_handler(
         Err(e) => {
             tracing::warn!("Failed to load session {}: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load session").into_response()
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+async fn delete_session_handler(
+    State(state): State<SharedWebState>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let state = state.read().await;
+    let mgr = SessionManager::new(state.sessions_dir.clone());
+    match mgr.delete_session(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Err(e) => {
+            tracing::warn!("Failed to delete session {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete session",
+            )
+                .into_response()
         }
     }
 }
@@ -1003,6 +1027,23 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
         .lightbox-prev { left: 12px; }
         .lightbox-next { right: 12px; }
         .session-thumb { cursor: pointer; }
+        .session-info { position: relative; }
+        .delete-session-btn {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: #dc2626;
+            color: #fff;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .session-card:hover .delete-session-btn { opacity: 1; }
+        .delete-session-btn:hover { background: #b91c1c; }
     </style>
 </head>
 <body>
@@ -1063,6 +1104,7 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
                         + '<div class="session-info">'
                         + '<div class="session-time">' + entryDate.toLocaleString() + activeTag + '</div>'
                         + '<div class="session-meta"><span>Duration: ' + durationText + '</span><span>Images: ' + images + '</span></div>'
+                        + '<button class="delete-session-btn" data-id="' + s.id + '" onclick="deleteSession(event, this)">Delete</button>'
                         + '</div></a></div>';
                 }).join('');
             } catch (e) {
@@ -1070,6 +1112,22 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
                 document.getElementById('sessionsList').innerHTML =
                     '<div class="empty-state"><p>Failed to load sessions</p></div>';
             }
+        }
+
+        function deleteSession(e, btn) {
+            e.preventDefault();
+            e.stopPropagation();
+            var id = btn.getAttribute('data-id');
+            if (!confirm('Delete this session and all its files? This cannot be undone.')) return;
+            fetch('/api/sessions/' + id, { method: 'DELETE' })
+                .then(function(res) {
+                    if (res.ok) {
+                        btn.closest('.session-card').remove();
+                    } else {
+                        alert('Failed to delete session');
+                    }
+                })
+                .catch(function(err) { alert('Error: ' + err.message); });
         }
 
         loadSessions().then(function() {
@@ -1303,6 +1361,17 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
         .lightbox-prev { left: 12px; }
         .lightbox-next { right: 12px; }
         .gallery img, .key-image-container img { cursor: pointer; }
+        .delete-btn {
+            background: #dc2626;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .delete-btn:hover { background: #b91c1c; }
     </style>
 </head>
 <body>
@@ -1315,6 +1384,7 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
         <header>
             <h1 id="pageTitle">Session Detail</h1>
             <div class="nav-links">
+                <button id="deleteBtn" class="delete-btn" style="display:none;" onclick="deleteSession()">Delete Session</button>
                 <a href="/sessions">All Sessions</a>
                 <a href="/">Dashboard</a>
             </div>
@@ -1323,6 +1393,21 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
         <div id="content" style="display:none;"></div>
     </div>
     <script>
+        function deleteSession() {
+            if (!confirm('Delete this session and all its images/video? This cannot be undone.')) return;
+            var pathParts = window.location.pathname.split('/');
+            var sessionId = pathParts[pathParts.length - 1];
+            fetch('/api/sessions/' + sessionId, { method: 'DELETE' })
+                .then(function(res) {
+                    if (res.ok) {
+                        window.location.href = '/sessions';
+                    } else {
+                        alert('Failed to delete session');
+                    }
+                })
+                .catch(function(e) { alert('Error: ' + e.message); });
+        }
+
         function formatDuration(secs) {
             if (secs == null) return 'In progress';
             const h = Math.floor(secs / 3600);
@@ -1352,6 +1437,7 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
                 var s = await res.json();
 
                 document.getElementById('pageTitle').textContent = 'Session: ' + new Date(s.entry_time).toLocaleString();
+                document.getElementById('deleteBtn').style.display = 'inline-block';
                 document.getElementById('loading').style.display = 'none';
                 var content = document.getElementById('content');
                 content.style.display = 'block';
@@ -1618,6 +1704,22 @@ mod tests {
         assert!(SESSION_DETAIL_HTML.contains("ArrowLeft"));
         assert!(SESSION_DETAIL_HTML.contains("ArrowRight"));
         assert!(SESSION_DETAIL_HTML.contains("Escape"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_session_detail_has_delete_button() {
+        assert!(SESSION_DETAIL_HTML.contains("deleteBtn"));
+        assert!(SESSION_DETAIL_HTML.contains("deleteSession"));
+        assert!(SESSION_DETAIL_HTML.contains("DELETE"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_sessions_list_has_delete_button() {
+        assert!(SESSIONS_LIST_HTML.contains("delete-session-btn"));
+        assert!(SESSIONS_LIST_HTML.contains("deleteSession"));
+        assert!(SESSIONS_LIST_HTML.contains("DELETE"));
     }
 
     #[cfg(feature = "web")]

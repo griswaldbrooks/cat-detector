@@ -157,6 +157,53 @@ impl SessionManager {
         Ok(Some(session))
     }
 
+    /// Delete a session and all its associated files (images, video)
+    pub fn delete_session(&self, id: &str) -> Result<bool, SessionError> {
+        let session_path = self.sessions_dir.join(format!("{}.json", id));
+        if !session_path.exists() {
+            return Ok(false);
+        }
+
+        // Load session to find associated files
+        let data = std::fs::read_to_string(&session_path)?;
+        let session: CatSession = serde_json::from_str(&data)?;
+
+        // Collect all file paths to delete
+        let mut files_to_delete: Vec<&PathBuf> = Vec::new();
+        if let Some(ref p) = session.entry_image {
+            files_to_delete.push(p);
+        }
+        if let Some(ref p) = session.exit_image {
+            files_to_delete.push(p);
+        }
+        for p in &session.sample_images {
+            files_to_delete.push(p);
+        }
+        if let Some(ref p) = session.video_path {
+            files_to_delete.push(p);
+        }
+
+        // Delete associated files (log warnings but don't fail)
+        for path in &files_to_delete {
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(path) {
+                    tracing::warn!("Failed to delete {:?}: {}", path, e);
+                } else {
+                    tracing::info!("Deleted {:?}", path);
+                }
+            }
+        }
+
+        // Delete the session JSON file
+        std::fs::remove_file(&session_path)?;
+        tracing::info!(
+            "Deleted session {} ({} associated files)",
+            id,
+            files_to_delete.len()
+        );
+        Ok(true)
+    }
+
     fn persist_session(&self, session: &CatSession) -> Result<(), SessionError> {
         std::fs::create_dir_all(&self.sessions_dir)?;
         let path = self.sessions_dir.join(format!("{}.json", session.id));
@@ -289,5 +336,64 @@ mod tests {
         // Newest first
         assert!(sessions[0].entry_time > sessions[1].entry_time);
         assert!(sessions[1].entry_time > sessions[2].entry_time);
+    }
+
+    #[test]
+    fn test_delete_session_removes_json_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let captures_dir = tmp.path().join("captures");
+        std::fs::create_dir_all(&captures_dir).unwrap();
+
+        let mut mgr = SessionManager::new(sessions_dir);
+
+        // Create session with associated files
+        let entry_time = Utc::now();
+        mgr.start_session(entry_time);
+
+        let entry_img = captures_dir.join("entry.jpg");
+        let exit_img = captures_dir.join("exit.jpg");
+        let sample_img = captures_dir.join("sample.jpg");
+        let video = captures_dir.join("video.mp4");
+
+        // Create fake files
+        for f in [&entry_img, &exit_img, &sample_img, &video] {
+            std::fs::write(f, b"fake").unwrap();
+        }
+
+        mgr.set_entry_image(entry_img.clone());
+        mgr.set_exit_image(exit_img.clone());
+        mgr.add_sample_image(sample_img.clone());
+        mgr.set_video_path(video.clone());
+
+        let exit_time = entry_time + chrono::Duration::seconds(60);
+        let session = mgr.end_session(exit_time).unwrap().unwrap();
+        let session_id = session.id.clone();
+
+        // Verify files exist
+        assert!(entry_img.exists());
+        assert!(video.exists());
+
+        // Delete session
+        let deleted = mgr.delete_session(&session_id).unwrap();
+        assert!(deleted);
+
+        // Session JSON gone
+        assert!(mgr.load_session(&session_id).unwrap().is_none());
+
+        // Associated files gone
+        assert!(!entry_img.exists());
+        assert!(!exit_img.exists());
+        assert!(!sample_img.exists());
+        assert!(!video.exists());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_session_returns_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(tmp.path().join("sessions"));
+
+        let result = mgr.delete_session("nonexistent").unwrap();
+        assert!(!result);
     }
 }
