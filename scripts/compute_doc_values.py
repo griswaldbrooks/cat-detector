@@ -9,23 +9,22 @@ Runs the CLIP pipeline on representative test images and prints:
 Usage: pixi run python scripts/compute_doc_values.py
 """
 
-import struct
 import sys
 from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from PIL import Image
 
-MODELS_DIR = Path(__file__).parent.parent / "models"
-TEST_IMAGES_DIR = Path(__file__).parent.parent / "test_images"
-CLIP_MODEL = MODELS_DIR / "clip_vitb32_image.onnx"
-EMBEDDINGS_FILE = MODELS_DIR / "clip_text_embeddings.bin"
-
-CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
-CLIP_STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
-CLIP_SIZE = 224
-TEMPERATURE = 100.0
+from clip_utils import (
+    CLIP_MODEL,
+    TEMPERATURE,
+    TEST_IMAGES_DIR,
+    TEXT_EMBEDDINGS_FILE,
+    encode_image,
+    load_embeddings,
+    preprocess_clip,
+    softmax_with_temp,
+)
 
 PROMPTS = [
     "a photo of a cat",
@@ -50,38 +49,8 @@ PERSON_IMAGES = [
 ]
 
 
-def load_embeddings(path):
-    with open(path, "rb") as f:
-        data = f.read()
-    count, dim = struct.unpack("<II", data[:8])
-    floats = np.frombuffer(data[8:], dtype=np.float32).reshape(count, dim)
-    return floats
-
-
-def preprocess_clip(image_path):
-    img = Image.open(image_path).convert("RGB")
-    w, h = img.size
-    scale = CLIP_SIZE / min(w, h)
-    new_w, new_h = round(w * scale), round(h * scale)
-    img = img.resize((new_w, new_h), Image.BICUBIC)
-    left = (new_w - CLIP_SIZE) // 2
-    top = (new_h - CLIP_SIZE) // 2
-    img = img.crop((left, top, left + CLIP_SIZE, top + CLIP_SIZE))
-    arr = np.array(img, dtype=np.float32) / 255.0
-    arr = (arr - CLIP_MEAN) / CLIP_STD
-    arr = arr.transpose(2, 0, 1)[np.newaxis, ...]
-    return arr
-
-
-def softmax_with_temp(sims, temp):
-    max_sim = max(sims)
-    exps = [np.exp((s - max_sim) * temp) for s in sims]
-    total = sum(exps)
-    return [e / total for e in exps]
-
-
 def main():
-    embeddings = load_embeddings(EMBEDDINGS_FILE)
+    embeddings = load_embeddings(TEXT_EMBEDDINGS_FILE)
     n_embeds, dim = embeddings.shape
 
     # === Text embedding analysis ===
@@ -136,7 +105,6 @@ def main():
     print("=" * 80)
 
     session = ort.InferenceSession(str(CLIP_MODEL), providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
 
     all_images = DOC_IMAGES + PERSON_IMAGES
     for img_name in all_images:
@@ -145,10 +113,7 @@ def main():
             print(f"\nSKIPPED (not found): {img_name}")
             continue
 
-        inp = preprocess_clip(img_path)
-        output = session.run(None, {input_name: inp})[0]
-        features = output.flatten()
-        features = features / np.linalg.norm(features)
+        features = encode_image(session, img_path)
 
         sims = [float(np.dot(features[:dim], embeddings[i])) for i in range(n_embeds)]
         probs = softmax_with_temp(sims, TEMPERATURE)
@@ -176,10 +141,7 @@ def main():
         img_path = TEST_IMAGES_DIR / img_name
         if not img_path.exists():
             continue
-        inp = preprocess_clip(img_path)
-        output = session.run(None, {input_name: inp})[0]
-        features = output.flatten()
-        features = features / np.linalg.norm(features)
+        features = encode_image(session, img_path)
         sims = [float(np.dot(features[:dim], embeddings[i])) for i in range(n_embeds)]
         probs = softmax_with_temp(sims, TEMPERATURE)
         detected = probs[0] >= 0.5

@@ -33,6 +33,12 @@ config.toml
 # Debian packages
 *.deb
 
+# Prototype images (curated reference photos, local only)
+/prototype_images/cat_overhead/
+/prototype_images/empty_room_overhead/
+/prototype_images/person_overhead/
+/prototype_images/litter_box_overhead/
+
 # Docusaurus
 /website/node_modules/
 /website/build/

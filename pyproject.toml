@@ -35,9 +35,24 @@ cat-detector-scripts = { path = ".", editable = true }
 [tool.pixi.environments]
 default = { solve-group = "default" }
 clip = { features = ["clip"], solve-group = "default" }
+docs = { features = ["docs"], no-default-feature = true, solve-group = "docs" }
 
 [tool.pixi.tasks]
 test-clip = "python scripts/test_clip_detection.py"
+generate-image-embeddings = """python scripts/generate_image_embeddings.py \
+  --classes cat_overhead:prototype_images/cat_overhead \
+            empty_room:prototype_images/empty_room_overhead \
+            person_overhead:prototype_images/person_overhead \
+            litter_box:prototype_images/litter_box_overhead"""
 
 [tool.pixi.feature.clip.tasks]
 generate-embeddings = "python scripts/generate_clip_embeddings.py"
+
+[tool.pixi.feature.docs.dependencies]
+nodejs = ">=22"
+
+[tool.pixi.feature.docs.tasks]
+docs-install = { cmd = "npm ci", cwd = "website" }
+docs-build = { cmd = "npm run build", cwd = "website", depends-on = ["docs-install"] }
+docs-serve = { cmd = "npm run serve", cwd = "website", depends-on = ["docs-install"] }
+docs-start = { cmd = "npm run start", cwd = "website", depends-on = ["docs-install"] }
