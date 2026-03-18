@@ -1,9 +1,9 @@
-//! Integration tests for CLIP ViT-B/32 zero-shot cat detection.
+//! Integration tests for CLIP ViT-B/32 cat detection.
 //!
 //! These tests require:
 //! - ONNX Runtime library (set ORT_DYLIB_PATH environment variable)
 //! - The CLIP model at models/clip_vitb32_image.onnx
-//! - Text embeddings at models/clip_text_embeddings.bin
+//! - Embeddings files in models/ (text and/or image)
 //! - Test images in test_images/
 //!
 //! Run with: ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so cargo test --test clip_integration_test
@@ -11,22 +11,37 @@
 use std::path::Path;
 
 const CLIP_MODEL_PATH: &str = "models/clip_vitb32_image.onnx";
-const CLIP_EMBEDDINGS_PATH: &str = "models/clip_text_embeddings.bin";
+const CLIP_TEXT_EMBEDDINGS_PATH: &str = "models/clip_text_embeddings.bin";
+const CLIP_IMAGE_EMBEDDINGS_PATH: &str = "models/clip_image_embeddings.bin";
 
 fn clip_available() -> bool {
     Path::new(CLIP_MODEL_PATH).exists()
-        && Path::new(CLIP_EMBEDDINGS_PATH).exists()
+        && Path::new(CLIP_TEXT_EMBEDDINGS_PATH).exists()
         && std::env::var("ORT_DYLIB_PATH").is_ok()
+}
+
+fn image_embeddings_available() -> bool {
+    clip_available() && Path::new(CLIP_IMAGE_EMBEDDINGS_PATH).exists()
 }
 
 fn make_clip_detector(threshold: f32) -> cat_detector::detector::ClipDetector {
     cat_detector::detector::ClipDetector::new(
         Path::new(CLIP_MODEL_PATH),
-        Path::new(CLIP_EMBEDDINGS_PATH),
+        Path::new(CLIP_TEXT_EMBEDDINGS_PATH),
         threshold,
         15,
     )
     .expect("Failed to load CLIP model")
+}
+
+fn make_fewshot_detector(threshold: f32) -> cat_detector::detector::ClipDetector {
+    cat_detector::detector::ClipDetector::new(
+        Path::new(CLIP_MODEL_PATH),
+        Path::new(CLIP_IMAGE_EMBEDDINGS_PATH),
+        threshold,
+        15,
+    )
+    .expect("Failed to load CLIP model with image embeddings")
 }
 
 macro_rules! clip_test {
@@ -227,76 +242,143 @@ mod clip_negative_detection {
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(detections.is_empty(), "Should not detect person as cat");
     });
+}
 
-    // === Edge cases: litter box / robot false positives ===
-    // These tests document known false positives with text embeddings.
-    // They are #[ignore] until image prototype embeddings are deployed.
+// === Few-shot image prototype embedding tests ===
+// These use image embeddings (models/clip_image_embeddings.bin) instead of text embeddings.
+// The 3 false positive edge cases are fixed; cat+litter box remains a known limitation.
+
+mod clip_fewshot_detection {
+    use super::*;
+    use cat_detector::detector::CatDetector;
+
+    // Verify few-shot still detects cats correctly
 
     #[tokio::test]
-    #[ignore = "Fails with text embeddings (55.7% cat prob). Needs image prototype embeddings."]
-    async fn test_clip_dirty_litter_box_not_detected() {
-        if !clip_available() {
-            eprintln!("Skipping: CLIP model or ORT_DYLIB_PATH not available");
+    async fn test_fewshot_detects_overhead_cat() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
             return;
         }
-        let detector = make_clip_detector(0.5);
+        let detector = make_fewshot_detector(0.5);
+        let img = image::open("test_images/cat_overhead_center.jpg").expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            !detections.is_empty(),
+            "Few-shot should detect cat in overhead view"
+        );
+        assert!(
+            detections[0].confidence > 0.95,
+            "Expected >95% confidence, got {:.1}%",
+            detections[0].confidence * 100.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fewshot_detects_overhead_tabby() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
+            return;
+        }
+        let detector = make_fewshot_detector(0.5);
+        let img = image::open("test_images/cat_overhead_tabby1.jpg").expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            !detections.is_empty(),
+            "Few-shot should detect tabby from overhead"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fewshot_detects_stock_cat() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
+            return;
+        }
+        let detector = make_fewshot_detector(0.5);
+        let img = image::open("test_images/cat1.jpg").expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            !detections.is_empty(),
+            "Few-shot should still detect stock cat photo"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fewshot_rejects_empty_room() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
+            return;
+        }
+        let detector = make_fewshot_detector(0.5);
+        let img = image::open("test_images/no_cat_overhead.jpg").expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            detections.is_empty(),
+            "Few-shot should not detect cat in empty room"
+        );
+    }
+
+    // === Fixed edge cases ===
+
+    #[tokio::test]
+    async fn test_fewshot_rejects_dirty_litter_box() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
+            return;
+        }
+        let detector = make_fewshot_detector(0.5);
         let img = image::open("test_images/litter_box_dirty_overhead_1.jpg")
             .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             detections.is_empty(),
-            "Dirty litter box should NOT be detected as cat"
+            "Few-shot should NOT detect dirty litter box as cat"
         );
     }
 
     #[tokio::test]
-    #[ignore = "Fails with text embeddings (87.2% cat prob). Needs image prototype embeddings."]
-    async fn test_clip_litter_robot_moving_not_detected() {
-        if !clip_available() {
-            eprintln!("Skipping: CLIP model or ORT_DYLIB_PATH not available");
+    async fn test_fewshot_rejects_litter_robot_moving() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
             return;
         }
-        let detector = make_clip_detector(0.5);
+        let detector = make_fewshot_detector(0.5);
         let img = image::open("test_images/litter_robot_moving_overhead_1.jpg")
             .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             detections.is_empty(),
-            "Moving litter robot should NOT be detected as cat"
+            "Few-shot should NOT detect moving litter robot as cat"
         );
     }
 
     #[tokio::test]
-    #[ignore = "Fails with text embeddings (75.3% cat prob). Needs image prototype embeddings."]
-    async fn test_clip_person_overhead_catbox_not_detected() {
-        if !clip_available() {
-            eprintln!("Skipping: CLIP model or ORT_DYLIB_PATH not available");
+    async fn test_fewshot_rejects_person_overhead_catbox() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
             return;
         }
-        let detector = make_clip_detector(0.5);
+        let detector = make_fewshot_detector(0.5);
         let img =
             image::open("test_images/person_overhead_catbox_1.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             detections.is_empty(),
-            "Overhead person at catbox should NOT be detected as cat"
+            "Few-shot should NOT detect overhead person as cat"
         );
     }
-}
 
-mod clip_edge_cases {
-    use super::*;
-    use cat_detector::detector::CatDetector;
+    // === Known limitation ===
 
-    // Cat with litter box in frame — should still detect the cat
     #[tokio::test]
-    #[ignore = "Fails with text embeddings (47.6% cat prob). Needs image prototype embeddings."]
-    async fn test_clip_cat_with_litter_box_detected() {
-        if !clip_available() {
-            eprintln!("Skipping: CLIP model or ORT_DYLIB_PATH not available");
+    #[ignore = "Known limitation: litter box dominates when cat and litter box coexist (0.972 vs 0.842 similarity)"]
+    async fn test_fewshot_detects_cat_with_litter_box() {
+        if !image_embeddings_available() {
+            eprintln!("Skipping: image embeddings not available");
             return;
         }
-        let detector = make_clip_detector(0.5);
+        let detector = make_fewshot_detector(0.5);
         let img = image::open("test_images/cat_with_litter_box_overhead_1.jpg")
             .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
