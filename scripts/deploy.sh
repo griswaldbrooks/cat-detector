@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Legacy rsync deploy. Prefer: ./scripts/deploy-deb.sh
 set -euo pipefail
 
 TARGET="${1:-catbox}"

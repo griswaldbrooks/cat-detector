@@ -10,6 +10,15 @@ Two deployment methods available. The .deb method is preferred for production.
 
 ## Method 1: .deb Package (preferred)
 
+One-step deploy:
+```bash
+./scripts/deploy-deb.sh
+```
+
+This builds .deb packages, copies them to catbox, installs via dpkg, and verifies the service.
+
+Or manually:
+
 1. **Build** the .deb packages:
 ```bash
 ./scripts/build-deb.sh
