@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
-use crate::config::WebConfig;
+use crate::config::{Config, WebConfig};
 use crate::detector::{BoundingBox, Detection};
 #[cfg(feature = "web")]
 use crate::session::SessionManager;
@@ -60,6 +60,8 @@ pub struct WebAppState {
     pub captures_dir: PathBuf,
     /// Static system info set at startup
     pub system_info: Option<SystemInfoResponse>,
+    /// Running configuration (set at startup)
+    pub config: Option<Config>,
 }
 
 impl Default for WebAppState {
@@ -75,6 +77,7 @@ impl Default for WebAppState {
             sessions_dir: PathBuf::from("captures/sessions"),
             captures_dir: PathBuf::from("captures"),
             system_info: None,
+            config: None,
         }
     }
 }
@@ -332,6 +335,8 @@ pub fn create_router(state: SharedWebState, frame_rx: FrameReceiver) -> Router {
         .route("/", get(dashboard_handler))
         .route("/sessions", get(sessions_list_handler))
         .route("/sessions/:id", get(session_detail_handler))
+        .route("/config", get(config_page_handler))
+        .route("/api/config", get(config_api_handler))
         .route("/api/status", get(status_handler))
         .route("/api/system-info", get(system_info_handler))
         .route("/api/captures", get(captures_handler))
@@ -460,6 +465,30 @@ async fn session_detail_api_handler(
             tracing::warn!("Failed to load session {}: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load session").into_response()
         }
+    }
+}
+
+#[cfg(feature = "web")]
+async fn config_page_handler() -> Html<&'static str> {
+    Html(CONFIG_PAGE_HTML)
+}
+
+#[cfg(feature = "web")]
+async fn config_api_handler(State(state): State<SharedWebState>) -> impl IntoResponse {
+    let state = state.read().await;
+    match &state.config {
+        Some(config) => {
+            // Redact sensitive fields
+            let mut redacted = config.clone();
+            if redacted.notification.recipient.is_some() {
+                redacted.notification.recipient = Some("***".to_string());
+            }
+            if redacted.notification.account.is_some() {
+                redacted.notification.account = Some("***".to_string());
+            }
+            Json(redacted).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "Config not available").into_response(),
     }
 }
 
@@ -740,6 +769,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <h1>Cat Detector <span id="versionTag" style="font-size:14px;color:#888;font-weight:normal;"></span></h1>
             <nav style="display:flex;align-items:center;gap:20px;">
                 <a href="/sessions" style="color:#60a5fa;text-decoration:none;font-size:14px;">Sessions</a>
+                <a href="/config" style="color:#60a5fa;text-decoration:none;font-size:14px;">Config</a>
                 <button class="info-btn" id="infoBtn" title="System Info">i</button>
                 <div class="status-indicator">
                     <div class="status-dot" id="statusDot"></div>
@@ -931,6 +961,7 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
         h1 { font-size: 24px; }
         a { color: #60a5fa; text-decoration: none; }
         a:hover { text-decoration: underline; }
+        .nav-links { display: flex; gap: 16px; }
         .sessions-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -1055,7 +1086,7 @@ const SESSIONS_LIST_HTML: &str = r#"<!DOCTYPE html>
     <div class="container">
         <header>
             <h1>Cat Sessions</h1>
-            <a href="/">Dashboard</a>
+            <div class="nav-links"><a href="/config">Config</a> <a href="/">Dashboard</a></div>
         </header>
         <div id="sessionsList" class="sessions-grid"></div>
     </div>
@@ -1386,6 +1417,7 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
             <div class="nav-links">
                 <button id="deleteBtn" class="delete-btn" style="display:none;" onclick="deleteSession()">Delete Session</button>
                 <a href="/sessions">All Sessions</a>
+                <a href="/config">Config</a>
                 <a href="/">Dashboard</a>
             </div>
         </header>
@@ -1536,6 +1568,191 @@ const SESSION_DETAIL_HTML: &str = r#"<!DOCTYPE html>
         }
 
         loadSession();
+    </script>
+</body>
+</html>
+"#;
+
+/// Config viewer HTML page
+#[cfg(feature = "web")]
+const CONFIG_PAGE_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; margin-bottom: 12px; color: #ccc; }
+        a { color: #60a5fa; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .nav-links { display: flex; gap: 16px; }
+        .config-section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .config-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .config-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #1a1a2e;
+            vertical-align: top;
+        }
+        .config-table td:first-child {
+            color: #888;
+            font-size: 13px;
+            white-space: nowrap;
+            width: 200px;
+        }
+        .config-table td:last-child {
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            word-break: break-all;
+        }
+        .badge-on {
+            display: inline-block;
+            background: #4ade80;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-off {
+            display: inline-block;
+            background: #666;
+            color: #ccc;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        #loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Configuration</h1>
+            <div class="nav-links">
+                <a href="/sessions">Sessions</a>
+                <a href="/">Dashboard</a>
+            </div>
+        </header>
+        <div id="loading">Loading configuration...</div>
+        <div id="content" style="display:none;"></div>
+    </div>
+    <script>
+        function badge(val) {
+            return val
+                ? '<span class="badge-on">Enabled</span>'
+                : '<span class="badge-off">Disabled</span>';
+        }
+
+        function row(label, value) {
+            if (value === null || value === undefined) return '';
+            return '<tr><td>' + label + '</td><td>' + value + '</td></tr>';
+        }
+
+        function section(title, rows) {
+            return '<div class="config-section"><h2>' + title + '</h2>'
+                + '<table class="config-table"><tbody>' + rows + '</tbody></table></div>';
+        }
+
+        async function loadConfig() {
+            try {
+                var res = await fetch('/api/config');
+                if (!res.ok) {
+                    document.getElementById('loading').textContent = 'Config not available';
+                    return;
+                }
+                var c = await res.json();
+                document.getElementById('loading').style.display = 'none';
+                var content = document.getElementById('content');
+                content.style.display = 'block';
+
+                var html = '';
+
+                html += section('Camera', ''
+                    + row('Device', c.camera.device_path)
+                    + row('Resolution', c.camera.frame_width + ' x ' + c.camera.frame_height)
+                    + row('FPS', c.camera.fps)
+                );
+
+                html += section('Detector', ''
+                    + row('Model', c.detector.model_path)
+                    + row('Format', c.detector.model_format)
+                    + row('Confidence Threshold', c.detector.confidence_threshold)
+                    + row('Cat Class ID', c.detector.cat_class_id)
+                    + row('Text Embeddings', c.detector.text_embeddings_path || 'default')
+                );
+
+                html += section('Tracking', ''
+                    + row('Detection Interval', c.tracking.detection_interval_ms + ' ms')
+                    + row('Enter Threshold', c.tracking.enter_threshold + ' consecutive detections')
+                    + row('Exit Threshold', c.tracking.exit_threshold + ' consecutive non-detections')
+                    + row('Sample Interval', c.tracking.sample_interval_secs + ' s')
+                );
+
+                html += section('Storage', ''
+                    + row('Output Directory', c.storage.output_dir)
+                    + row('Image Format', c.storage.image_format)
+                    + row('JPEG Quality', c.storage.jpeg_quality)
+                );
+
+                html += section('Notifications', ''
+                    + row('Status', badge(c.notification.enabled))
+                    + row('Notify on Enter', badge(c.notification.notify_on_enter))
+                    + row('Notify on Exit', badge(c.notification.notify_on_exit))
+                    + row('Send Video', badge(c.notification.send_video))
+                    + row('Attachment Timeout', c.notification.attachment_timeout_secs + ' s')
+                    + row('Timezone', c.notification.timezone || 'UTC')
+                    + row('signal-cli Path', c.notification.signal_cli_path || 'not set')
+                );
+
+                html += section('Web Dashboard', ''
+                    + row('Status', badge(c.web.enabled))
+                    + row('Bind Address', c.web.bind_address + ':' + c.web.port)
+                    + row('Stream FPS', c.web.stream_fps)
+                );
+
+                content.innerHTML = html;
+            } catch (e) {
+                console.error('Failed to load config:', e);
+                document.getElementById('loading').textContent = 'Failed to load configuration';
+            }
+        }
+
+        loadConfig();
     </script>
 </body>
 </html>
@@ -1720,6 +1937,13 @@ mod tests {
         assert!(SESSIONS_LIST_HTML.contains("delete-session-btn"));
         assert!(SESSIONS_LIST_HTML.contains("deleteSession"));
         assert!(SESSIONS_LIST_HTML.contains("DELETE"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn test_config_page_has_api_call() {
+        assert!(CONFIG_PAGE_HTML.contains("/api/config"));
+        assert!(CONFIG_PAGE_HTML.contains("Configuration"));
     }
 
     #[cfg(feature = "web")]

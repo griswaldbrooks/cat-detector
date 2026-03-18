@@ -517,6 +517,7 @@ fn setup_web(
                 config.camera.frame_width, config.camera.frame_height
             ),
         });
+        web_app_state.config = Some(config.clone());
         let state = Arc::new(RwLock::new(web_app_state));
         let (tx, rx) = web::create_frame_channel();
 
