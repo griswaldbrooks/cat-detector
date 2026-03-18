@@ -5,8 +5,8 @@ title: Few-Shot Prototype Detection
 
 # Few-Shot Prototype Detection
 
-:::caution Work in Progress
-This feature is under active development. The [zero-shot text approach](./clip-detection.md) is still the deployed pipeline.
+:::info Not Yet Deployed
+The embedding pipeline and benchmarks are complete. The [zero-shot text approach](./clip-detection.md) is still the deployed pipeline — switching to image embeddings requires only a config change pointing to `clip_image_embeddings.bin`.
 :::
 
 ## Motivation
@@ -117,7 +117,7 @@ Reference images are curated from:
 
 Selected images are copied into `prototype_images/<class>/` for reproducible embedding generation.
 
-## Expected Results
+## Benchmark Results
 
 | Image | Zero-Shot P(cat) | Few-Shot P(cat) | Status |
 |---|---|---|---|
@@ -132,7 +132,7 @@ Selected images are copied into `prototype_images/<class>/` for reproducible emb
 | **Cat with litter box** | **47.6%** (FN) | **0.00%** (FN) | Remains — see below |
 
 :::note Remaining false negative
-The "cat with litter box" image remains a false negative because the litter box dominates the visual features (litter similarity 0.972 vs cat 0.842). With only 2 litter box prototype images, the litter class is very narrowly tuned. This can likely be improved by curating more diverse litter box prototype images or tuning the softmax temperature. Tracked in bead `8d8`.
+The "cat with litter box" image remains a false negative because the litter box dominates the visual features (litter similarity 0.972 vs cat 0.842). With only 2 litter box prototype images, the litter class is very narrowly tuned. This can likely be improved by curating more diverse litter box prototype images or tuning the softmax temperature.
 :::
 
 ## Embedding Generation
