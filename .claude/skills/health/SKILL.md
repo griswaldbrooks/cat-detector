@@ -22,7 +22,7 @@ Quick health check of the cat-detector service running on catbox.
 ### 1. Service status
 
 ```bash
-ssh catbox "sudo -n systemctl status cat-detector --no-pager -l"
+ssh catbox "systemctl status cat-detector --no-pager -l"
 ```
 
 Report: running/stopped/failed, uptime, memory usage.
