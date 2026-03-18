@@ -135,6 +135,7 @@ notify_on_enter = true
 notify_on_exit = true
 send_video = true                # attach video to exit notifications
 attachment_timeout_secs = 120    # longer timeout for video uploads
+# timezone = "America/New_York" # IANA timezone for timestamps (default: UTC)
 
 [tracking]
 enter_threshold = 3
