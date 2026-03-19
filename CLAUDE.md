@@ -22,7 +22,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 
 ## Architecture
 
-13 modules with trait-based dependency injection:
+14 modules with trait-based dependency injection:
 
 | Module | Purpose |
 |---|---|
@@ -30,19 +30,20 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `app.rs` | Generic `App<C,D,S,N>` orchestrating the detection loop |
 | `config.rs` | TOML config parsing with defaults and validation |
 | `camera.rs` | `CameraCapture` trait + V4L2Camera (auto-detect) / StubCamera |
-| `detector.rs` | `CatDetector` trait + ClipDetector (zero-shot classification) |
+| `detector.rs` | `CatDetector` trait + ClipDetector (Softmax or CatnessDirection mode) |
 | `tracker.rs` | Hysteresis state machine (Absent/Present) |
 | `storage.rs` | `ImageStorage` trait + FileSystemStorage |
 | `notifier.rs` | `Notifier` trait + SignalNotifier (signal-cli, video attachments, linked device support) |
 | `recorder.rs` | `VideoRecorder` trait + FfmpegRecorder (pipes raw frames to ffmpeg) |
 | `session.rs` | `CatSession` model + `SessionManager` (JSON persistence) |
 | `service.rs` | Systemd service install/uninstall |
+| `watchdog.rs` | `StorageWatchdog` — monitors captures dir size, blocks recording at critical threshold |
 | `web.rs` | Axum dashboard, MJPEG stream, session list/detail pages, capture serving |
 | `lib.rs` | Library exports |
 
 ## Key Details
 
-- **Model**: CLIP ViT-B/32 (zero-shot, 224x224, 3-class: cat/room/person). Cat = COCO class 15. See `docs/model-evaluation.md` for historical comparison with YOLO models
+- **Model**: CLIP ViT-B/32 (zero-shot, 224x224). Two detection modes: softmax (3-class: cat/room/person) or catness direction (linear probe). Cat = COCO class 15. See `docs/model-evaluation.md` for historical comparison with YOLO models
 - **ONNX Runtime**: loaded dynamically via `ORT_DYLIB_PATH` env var
 - **Cargo features**: `real-camera` (v4l2), `web` (axum)
 - **Error handling**: `thiserror` for module errors, `anyhow` only in `main.rs`
@@ -50,7 +51,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records with wallclock timestamps for real-time playback
 - **Signal notifications**: signal-cli with linked device support (`-a` account flag), video attachments on exit, `test-notification` CLI command
-- **Tests**: 87 unit + 1 ignored + 15 CLIP integration; all traits have Mock* implementations
+- **Tests**: 115 unit + 1 ignored + 26 CLIP integration; all traits have Mock* implementations
 - **Deployment guide**: `docs/deployment.md` — full setup including permissions, signal-cli, systemd
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 - **Python scripts**: managed via [pixi](https://pixi.sh) (`pixi run test-clip`, `pixi run -e clip generate-embeddings`)
@@ -62,6 +63,17 @@ Managed via pixi (deps in `pyproject.toml`, lock in `pixi.lock`):
 ```bash
 pixi run test-clip                    # Test CLIP detection pipeline on test images
 pixi run -e clip generate-embeddings  # Regenerate text embeddings (needs torch + clip)
+pixi run generate-catness-direction   # Generate catness direction binary from prototypes
+```
+
+## Documentation Site
+
+Docusaurus site in `website/`, managed via pixi `docs` environment:
+
+```bash
+pixi run -e docs docs-build    # Build site (catches broken links, bad MDX)
+pixi run -e docs docs-start    # Dev server with hot reload (localhost:3000)
+pixi run -e docs docs-serve    # Serve production build locally
 ```
 
 ## Issue Tracking

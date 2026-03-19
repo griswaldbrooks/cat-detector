@@ -1,4 +1,5 @@
 use cat_detector::detector::CatDetector;
+use cat_detector::watchdog::{StorageStatus, StorageWatchdog};
 use cat_detector::{camera, config, detector, notifier, recorder, service, storage, web};
 
 use anyhow::{Context, Result};
@@ -46,9 +47,12 @@ enum Commands {
         /// Path to CLIP ONNX model file
         #[arg(short, long, default_value = "models/clip_vitb32_image.onnx")]
         model: PathBuf,
-        /// Confidence threshold (0.0 - 1.0)
+        /// Confidence threshold (0.0 - 1.0 for softmax, ~-0.3 to 0.4 for catness)
         #[arg(short, long, default_value = "0.5")]
         threshold: f32,
+        /// Path to catness direction file (enables catness direction mode)
+        #[arg(long)]
+        catness_direction: Option<PathBuf>,
     },
     /// Install as a systemd service
     InstallService {
@@ -109,7 +113,8 @@ async fn main() -> Result<()> {
             image,
             model,
             threshold,
-        } => test_image(image, model, threshold).await,
+            catness_direction,
+        } => test_image(image, model, threshold, catness_direction).await,
         Commands::TestNotification { config } => test_notification(config).await,
         Commands::InstallService { config } => install_service(config).await,
         Commands::UninstallService => uninstall_service().await,
@@ -126,6 +131,7 @@ struct DaemonContext {
     notif: Arc<notifier::SignalNotifier>,
     session_mgr: cat_detector::session::SessionManager,
     video_recorder: recorder::FfmpegRecorder,
+    watchdog: StorageWatchdog,
     #[cfg(feature = "web")]
     web_state: Option<Arc<RwLock<web::WebAppState>>>,
 }
@@ -142,12 +148,16 @@ impl DaemonContext {
         // Start new session
         self.session_mgr.start_session(timestamp);
 
-        // Start video recording
-        if let Err(e) = self
-            .video_recorder
-            .start_recording(&config.storage.output_dir, timestamp)
-        {
-            tracing::warn!("Failed to start recording: {}", e);
+        // Start video recording (skip if storage is critical)
+        if self.watchdog.is_recording_allowed() {
+            if let Err(e) = self
+                .video_recorder
+                .start_recording(&config.storage.output_dir, timestamp)
+            {
+                tracing::warn!("Failed to start recording: {}", e);
+            }
+        } else {
+            tracing::warn!("Skipping video recording — storage at critical threshold");
         }
 
         let saved = self
@@ -445,25 +455,45 @@ fn init_notifier(config: &config::Config) -> Result<notifier::SignalNotifier> {
 }
 
 fn init_detector(config: &config::Config) -> Result<Arc<dyn detector::CatDetector>> {
-    let text_emb_path = config
-        .detector
-        .text_embeddings_path
-        .clone()
-        .unwrap_or_else(|| {
-            config
+    match config.detector.detection_mode {
+        config::DetectionMode::Softmax => {
+            let text_emb_path = config
                 .detector
-                .model_path
-                .with_file_name("clip_text_embeddings.bin")
-        });
-    Ok(Arc::new(
-        detector::ClipDetector::new(
-            &config.detector.model_path,
-            &text_emb_path,
-            config.detector.confidence_threshold,
-            config.detector.cat_class_id,
-        )
-        .context("Failed to initialize CLIP detector")?,
-    ))
+                .text_embeddings_path
+                .clone()
+                .unwrap_or_else(|| {
+                    config
+                        .detector
+                        .model_path
+                        .with_file_name("clip_text_embeddings.bin")
+                });
+            Ok(Arc::new(
+                detector::ClipDetector::new(
+                    &config.detector.model_path,
+                    &text_emb_path,
+                    config.detector.confidence_threshold,
+                    config.detector.cat_class_id,
+                )
+                .context("Failed to initialize CLIP detector (softmax mode)")?,
+            ))
+        }
+        config::DetectionMode::CatnessDirection => {
+            let direction_path = config
+                .detector
+                .catness_direction_path
+                .as_ref()
+                .expect("catness_direction_path required (should be caught by validation)");
+            Ok(Arc::new(
+                detector::ClipDetector::new_catness_direction(
+                    &config.detector.model_path,
+                    direction_path,
+                    config.detector.confidence_threshold,
+                    config.detector.cat_class_id,
+                )
+                .context("Failed to initialize CLIP detector (catness direction mode)")?,
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "real-camera")]
@@ -598,12 +628,20 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         config.camera.fps,
     );
 
+    // Initialize storage watchdog
+    let watchdog = StorageWatchdog::new(
+        config.storage.warn_threshold_gb,
+        config.storage.critical_threshold_gb,
+        config.storage.output_dir.clone(),
+    );
+
     // Create daemon context
     let mut ctx = DaemonContext {
         stor: stor.clone(),
         notif: notif.clone(),
         session_mgr,
         video_recorder,
+        watchdog,
         #[cfg(feature = "web")]
         web_state: web_state.clone(),
     };
@@ -635,6 +673,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let base_interval = tokio::time::Duration::from_millis(frame_interval_ms);
     let max_backoff = tokio::time::Duration::from_secs(60);
     let mut consecutive_errors: u32 = 0;
+
+    // Storage watchdog timing
+    let watchdog_interval = tokio::time::Duration::from_secs(config.storage.watchdog_interval_secs);
+    let mut last_watchdog_check = tokio::time::Instant::now() - watchdog_interval; // check on startup
 
     // Track latest detections for non-detection frames
     let mut latest_detections = Vec::new();
@@ -684,6 +726,33 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         if let Some(ref tx) = frame_tx {
             ctx.send_mjpeg_frame(tx, now, &mut last_frame_sent, stream_interval)
                 .await;
+        }
+
+        // Periodic storage watchdog check
+        if now.duration_since(last_watchdog_check) >= watchdog_interval {
+            last_watchdog_check = now;
+            match ctx.watchdog.check() {
+                StorageStatus::Ok { used_bytes } => {
+                    let gb = used_bytes as f64 / 1_000_000_000.0;
+                    tracing::debug!("Storage watchdog: {:.2} GB used (ok)", gb);
+                }
+                StorageStatus::Warning { used_bytes } => {
+                    let gb = used_bytes as f64 / 1_000_000_000.0;
+                    tracing::warn!(
+                        "Storage watchdog: {:.2} GB used (warning threshold: {:.1} GB)",
+                        gb,
+                        config.storage.warn_threshold_gb
+                    );
+                }
+                StorageStatus::Critical { used_bytes } => {
+                    let gb = used_bytes as f64 / 1_000_000_000.0;
+                    tracing::error!(
+                        "Storage watchdog: {:.2} GB used (CRITICAL — recording disabled, threshold: {:.1} GB)",
+                        gb,
+                        config.storage.critical_threshold_gb
+                    );
+                }
+            }
         }
 
         // Add every frame to video recorder if recording
@@ -808,7 +877,12 @@ async fn test_camera(device: String, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32) -> Result<()> {
+async fn test_image(
+    image_path: PathBuf,
+    model_path: PathBuf,
+    threshold: f32,
+    catness_direction: Option<PathBuf>,
+) -> Result<()> {
     info!("Testing detection on {:?}", image_path);
     info!("Using model: {:?}", model_path);
     info!("Confidence threshold: {}", threshold);
@@ -819,9 +893,15 @@ async fn test_image(image_path: PathBuf, model_path: PathBuf, threshold: f32) ->
     info!("Loaded image: {}x{}", img.width(), img.height());
 
     // Initialize CLIP detector
-    let text_emb_path = model_path.with_file_name("clip_text_embeddings.bin");
-    let det = detector::ClipDetector::new(&model_path, &text_emb_path, threshold, 15)
-        .context("Failed to initialize CLIP detector")?;
+    let det = if let Some(ref direction_path) = catness_direction {
+        info!("Using catness direction mode: {:?}", direction_path);
+        detector::ClipDetector::new_catness_direction(&model_path, direction_path, threshold, 15)
+            .context("Failed to initialize CLIP detector (catness direction)")?
+    } else {
+        let text_emb_path = model_path.with_file_name("clip_text_embeddings.bin");
+        detector::ClipDetector::new(&model_path, &text_emb_path, threshold, 15)
+            .context("Failed to initialize CLIP detector")?
+    };
     info!("Detector initialized");
 
     // Run detection

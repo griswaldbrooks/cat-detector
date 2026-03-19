@@ -6,7 +6,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Guides',
-      items: ['deployment', 'deployment-options'],
+      items: ['deployment', 'deployment-options', 'sessions'],
     },
     {
       type: 'category',

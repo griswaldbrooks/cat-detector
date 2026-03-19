@@ -37,6 +37,26 @@ pub trait CatDetector: Send + Sync {
     fn is_cat(&self, detection: &Detection) -> bool;
 }
 
+/// Classification mode for the CLIP detector.
+///
+/// Both modes share the same ONNX session and preprocessing — only the final
+/// classification step differs.
+enum ClassificationMode {
+    /// Softmax over cosine similarities with text/image embeddings (original approach).
+    Softmax {
+        /// Pre-computed, L2-normalized embedding for the positive class (cat) [dim]
+        cat_embedding: Vec<f32>,
+        /// Pre-computed, L2-normalized embeddings for negative classes [N][dim]
+        negative_embeddings: Vec<Vec<f32>>,
+    },
+    /// Dot product with a catness direction vector (linear probe approach).
+    /// Score > threshold → cat. Scores typically range -0.3 to 0.4.
+    CatnessDirection {
+        /// L2-normalized direction vector: normalize(cat_mean - noncat_mean)
+        direction: Vec<f32>,
+    },
+}
+
 /// CLIP-based zero-shot cat classifier using image-text similarity.
 ///
 /// Uses a CLIP image encoder (ONNX) and pre-computed text embeddings to classify
@@ -46,10 +66,7 @@ pub struct ClipDetector {
     session: std::sync::Mutex<Session>,
     confidence_threshold: f32,
     cat_class_id: u32,
-    /// Pre-computed, L2-normalized text embedding for the positive class (cat) [dim]
-    cat_embedding: Vec<f32>,
-    /// Pre-computed, L2-normalized text embeddings for negative classes [N][dim]
-    negative_embeddings: Vec<Vec<f32>>,
+    mode: ClassificationMode,
     embedding_dim: usize,
 }
 
@@ -65,12 +82,7 @@ impl ClipDetector {
         confidence_threshold: f32,
         cat_class_id: u32,
     ) -> Result<Self, DetectorError> {
-        let session = Session::builder()
-            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?
-            .with_intra_threads(4)
-            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?
-            .commit_from_file(model_path)
-            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?;
+        let session = Self::create_session(model_path)?;
 
         // Load text embeddings binary file
         let emb_bytes = std::fs::read(text_embeddings_path).map_err(|e| {
@@ -128,8 +140,10 @@ impl ClipDetector {
             session: std::sync::Mutex::new(session),
             confidence_threshold,
             cat_class_id,
-            cat_embedding,
-            negative_embeddings,
+            mode: ClassificationMode::Softmax {
+                cat_embedding,
+                negative_embeddings,
+            },
             embedding_dim,
         })
     }
@@ -167,9 +181,179 @@ impl ClipDetector {
         Ok(array)
     }
 
+    /// Create a new ClipDetector using catness direction classification.
+    ///
+    /// Instead of softmax over text embeddings, this mode computes a dot product
+    /// between the image embedding and a pre-computed "catness direction" vector.
+    /// Scores above the threshold indicate a cat.
+    pub fn new_catness_direction(
+        model_path: &Path,
+        direction_path: &Path,
+        confidence_threshold: f32,
+        cat_class_id: u32,
+    ) -> Result<Self, DetectorError> {
+        let session = Self::create_session(model_path)?;
+        let (direction, embedding_dim) = Self::load_catness_direction(direction_path)?;
+
+        tracing::info!(
+            "Loaded CLIP model {:?} with catness direction (dim={}, threshold={:.3})",
+            model_path,
+            embedding_dim,
+            confidence_threshold,
+        );
+
+        Ok(Self {
+            session: std::sync::Mutex::new(session),
+            confidence_threshold,
+            cat_class_id,
+            mode: ClassificationMode::CatnessDirection { direction },
+            embedding_dim,
+        })
+    }
+
+    fn create_session(model_path: &Path) -> Result<Session, DetectorError> {
+        Session::builder()
+            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?
+            .with_intra_threads(4)
+            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))?
+            .commit_from_file(model_path)
+            .map_err(|e| DetectorError::ModelLoadError(e.to_string()))
+    }
+
+    /// Load a catness direction binary file.
+    ///
+    /// Format: `[dim: u32 LE][direction: f32 x dim]`
+    /// Returns (direction_vector, embedding_dim).
+    fn load_catness_direction(path: &Path) -> Result<(Vec<f32>, usize), DetectorError> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            DetectorError::ModelLoadError(format!(
+                "Failed to load catness direction from {:?}: {}",
+                path, e
+            ))
+        })?;
+
+        if bytes.len() < 4 {
+            return Err(DetectorError::ModelLoadError(
+                "Catness direction file too small".to_string(),
+            ));
+        }
+
+        let dim = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let expected_size = 4 + dim * 4;
+        if bytes.len() < expected_size {
+            return Err(DetectorError::ModelLoadError(format!(
+                "Catness direction size mismatch: dim={}, file_size={}, expected={}",
+                dim,
+                bytes.len(),
+                expected_size
+            )));
+        }
+
+        let direction: Vec<f32> = bytes[4..]
+            .chunks_exact(4)
+            .take(dim)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        Ok((direction, dim))
+    }
+
+    /// Compute catness score as dot product of image embedding with catness direction.
+    fn compute_catness_score(image_emb: &[f32], direction: &[f32]) -> f32 {
+        image_emb
+            .iter()
+            .zip(direction.iter())
+            .map(|(a, b)| a * b)
+            .sum()
+    }
+
     fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         // Both vectors are already L2-normalized, so dot product = cosine similarity
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    }
+
+    /// Classify using softmax over cosine similarities with text/image embeddings.
+    fn classify_softmax(
+        image_emb: &[f32],
+        cat_embedding: &[f32],
+        negative_embeddings: &[Vec<f32>],
+        confidence_threshold: f32,
+        cat_class_id: u32,
+        original_width: u32,
+        original_height: u32,
+    ) -> Vec<Detection> {
+        let cat_sim = Self::cosine_similarity(image_emb, cat_embedding);
+        let neg_sims: Vec<f32> = negative_embeddings
+            .iter()
+            .map(|emb| Self::cosine_similarity(image_emb, emb))
+            .collect();
+
+        // Softmax with temperature=100 over all classes to get cat probability
+        let max_sim = neg_sims
+            .iter()
+            .fold(cat_sim, |max, &s| if s > max { s } else { max });
+        let cat_exp = ((cat_sim - max_sim) * 100.0).exp();
+        let sum_exp: f32 = cat_exp
+            + neg_sims
+                .iter()
+                .map(|&s| ((s - max_sim) * 100.0).exp())
+                .sum::<f32>();
+        let cat_prob = cat_exp / sum_exp;
+
+        tracing::debug!(
+            "CLIP softmax: cat_sim={:.4}, neg_sims={:?}, cat_prob={:.4}",
+            cat_sim,
+            neg_sims,
+            cat_prob,
+        );
+
+        if cat_prob >= confidence_threshold {
+            vec![Detection {
+                class_id: cat_class_id,
+                confidence: cat_prob,
+                bbox: BoundingBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: original_width as f32,
+                    height: original_height as f32,
+                },
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    /// Classify using catness direction dot product.
+    fn classify_catness(
+        image_emb: &[f32],
+        direction: &[f32],
+        confidence_threshold: f32,
+        cat_class_id: u32,
+        original_width: u32,
+        original_height: u32,
+    ) -> Vec<Detection> {
+        let score = Self::compute_catness_score(image_emb, direction);
+
+        tracing::debug!(
+            "CLIP catness: score={:.4}, threshold={:.4}",
+            score,
+            confidence_threshold
+        );
+
+        if score >= confidence_threshold {
+            vec![Detection {
+                class_id: cat_class_id,
+                confidence: score,
+                bbox: BoundingBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: original_width as f32,
+                    height: original_height as f32,
+                },
+            }]
+        } else {
+            vec![]
+        }
     }
 }
 
@@ -215,48 +399,32 @@ impl CatDetector for ClipDetector {
             image_features
         };
 
-        // Compute cosine similarities against all text embeddings
         let image_emb = &normalized[..self.embedding_dim];
-        let cat_sim = Self::cosine_similarity(image_emb, &self.cat_embedding);
-        let neg_sims: Vec<f32> = self
-            .negative_embeddings
-            .iter()
-            .map(|emb| Self::cosine_similarity(image_emb, emb))
-            .collect();
 
-        // Softmax with temperature=100 over all classes to get cat probability
-        let max_sim = neg_sims
-            .iter()
-            .fold(cat_sim, |max, &s| if s > max { s } else { max });
-        let cat_exp = ((cat_sim - max_sim) * 100.0).exp();
-        let sum_exp: f32 = cat_exp
-            + neg_sims
-                .iter()
-                .map(|&s| ((s - max_sim) * 100.0).exp())
-                .sum::<f32>();
-        let cat_prob = cat_exp / sum_exp;
+        let detections = match &self.mode {
+            ClassificationMode::Softmax {
+                cat_embedding,
+                negative_embeddings,
+            } => Self::classify_softmax(
+                image_emb,
+                cat_embedding,
+                negative_embeddings,
+                self.confidence_threshold,
+                self.cat_class_id,
+                original_width,
+                original_height,
+            ),
+            ClassificationMode::CatnessDirection { direction } => Self::classify_catness(
+                image_emb,
+                direction,
+                self.confidence_threshold,
+                self.cat_class_id,
+                original_width,
+                original_height,
+            ),
+        };
 
-        tracing::debug!(
-            "CLIP: cat_sim={:.4}, neg_sims={:?}, cat_prob={:.4}",
-            cat_sim,
-            neg_sims,
-            cat_prob,
-        );
-
-        if cat_prob >= self.confidence_threshold {
-            Ok(vec![Detection {
-                class_id: self.cat_class_id,
-                confidence: cat_prob,
-                bbox: BoundingBox {
-                    x: 0.0,
-                    y: 0.0,
-                    width: original_width as f32,
-                    height: original_height as f32,
-                },
-            }])
-        } else {
-            Ok(vec![])
-        }
+        Ok(detections)
     }
 
     fn is_cat(&self, detection: &Detection) -> bool {
@@ -570,5 +738,110 @@ mod tests {
         assert_eq!(floats[0], 0.5); // cat_emb[0]
         assert_eq!(floats[4], -0.5); // neg1_emb[0]
         assert_eq!(floats[8], 0.0); // neg2_emb[0]
+    }
+
+    #[test]
+    fn test_load_catness_direction_valid() {
+        // Format: [dim: u32 LE][direction: f32 x dim]
+        let direction: Vec<f32> = vec![0.5, -0.3, 0.8, 0.1];
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        for f in &direction {
+            bytes.extend_from_slice(&f.to_le_bytes());
+        }
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+
+        let (loaded, dim) = ClipDetector::load_catness_direction(tmp.path()).unwrap();
+        assert_eq!(dim, 4);
+        assert_eq!(loaded.len(), 4);
+        for (a, b) in loaded.iter().zip(direction.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_load_catness_direction_file_too_small() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &[0u8, 1, 2]).unwrap(); // only 3 bytes
+
+        let result = ClipDetector::load_catness_direction(tmp.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too small"));
+    }
+
+    #[test]
+    fn test_load_catness_direction_size_mismatch() {
+        // Claim dim=10 but only provide 2 floats
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&2.0f32.to_le_bytes());
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+
+        let result = ClipDetector::load_catness_direction(tmp.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("size mismatch"));
+    }
+
+    #[test]
+    fn test_compute_catness_score_positive_alignment() {
+        let image_emb = vec![0.5, 0.5, 0.5, 0.5];
+        let direction = vec![0.5, 0.5, 0.5, 0.5];
+        let score = ClipDetector::compute_catness_score(&image_emb, &direction);
+        assert!((score - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_catness_score_negative_alignment() {
+        let image_emb = vec![0.5, 0.5, 0.5, 0.5];
+        let direction = vec![-0.5, -0.5, -0.5, -0.5];
+        let score = ClipDetector::compute_catness_score(&image_emb, &direction);
+        assert!((score - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_catness_score_orthogonal() {
+        let image_emb = vec![1.0, 0.0];
+        let direction = vec![0.0, 1.0];
+        let score = ClipDetector::compute_catness_score(&image_emb, &direction);
+        assert!(score.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_classify_catness_above_threshold_returns_detection() {
+        // direction aligned with image → high score
+        let image_emb = vec![0.5, 0.5, 0.5, 0.5];
+        let direction = vec![0.5, 0.5, 0.5, 0.5];
+        let result = ClipDetector::classify_catness(&image_emb, &direction, 0.1, 15, 640, 480);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].class_id, 15);
+        assert!((result[0].confidence - 1.0).abs() < 1e-6);
+        assert_eq!(result[0].bbox.width, 640.0);
+        assert_eq!(result[0].bbox.height, 480.0);
+    }
+
+    #[test]
+    fn test_classify_catness_below_threshold_returns_empty() {
+        // direction anti-aligned with image → negative score
+        let image_emb = vec![0.5, 0.5, 0.5, 0.5];
+        let direction = vec![-0.5, -0.5, -0.5, -0.5];
+        let result = ClipDetector::classify_catness(&image_emb, &direction, 0.1, 15, 640, 480);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_classify_softmax_extracts_correctly() {
+        // cat_emb fully aligned, negatives orthogonal → cat_prob should be ~1.0
+        let image_emb = vec![1.0, 0.0];
+        let cat_emb = vec![1.0, 0.0];
+        let neg_embs = vec![vec![0.0, 1.0]];
+        let result =
+            ClipDetector::classify_softmax(&image_emb, &cat_emb, &neg_embs, 0.5, 15, 640, 480);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].confidence > 0.99);
     }
 }

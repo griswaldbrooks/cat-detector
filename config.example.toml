@@ -25,9 +25,16 @@ confidence_threshold = 0.5
 cat_class_id = 15
 # Model format: "auto" (detect from filename), "yolox", "yolo11", "clip"
 model_format = "clip"
-# Path to CLIP text embeddings (required when model_format = "clip")
+# Detection mode: "softmax" (default) or "catness_direction"
+# - softmax: compares against text/image embeddings using softmax (threshold 0.0-1.0)
+# - catness_direction: dot product with catness direction vector (threshold ~-0.3 to 0.4)
+# detection_mode = "softmax"
+# Path to CLIP text embeddings (required when model_format = "clip" and detection_mode = "softmax")
 # Defaults to clip_text_embeddings.bin in the same directory as the model
 # text_embeddings_path = "models/clip_text_embeddings.bin"
+# Path to catness direction file (required when detection_mode = "catness_direction")
+# Generate with: pixi run -e clip generate-catness-direction
+# catness_direction_path = "models/catness_direction.bin"
 
 [storage]
 # Directory where captured images will be saved
@@ -36,6 +43,12 @@ output_dir = "captures"
 image_format = "jpg"
 # JPEG quality (1-100, only used if format is jpg)
 jpeg_quality = 85
+# Storage watchdog: warn when captures exceed this size (GB)
+warn_threshold_gb = 5.0
+# Storage watchdog: stop recording when captures exceed this size (GB)
+critical_threshold_gb = 8.0
+# How often to check storage usage (seconds)
+watchdog_interval_secs = 300
 
 [notification]
 # Enable/disable Signal notifications

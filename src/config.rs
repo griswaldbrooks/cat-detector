@@ -63,6 +63,20 @@ impl Default for CameraConfig {
     }
 }
 
+/// Detection classification mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectionMode {
+    /// Softmax over cosine similarities with text/image embeddings (default).
+    Softmax,
+    /// Dot product with a catness direction vector (linear probe).
+    CatnessDirection,
+}
+
+fn default_detection_mode() -> DetectionMode {
+    DetectionMode::Softmax
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectorConfig {
     pub model_path: PathBuf,
@@ -75,8 +89,13 @@ pub struct DetectorConfig {
     /// Model format (only "clip" is supported)
     #[serde(default = "default_model_format")]
     pub model_format: String,
-    /// Path to CLIP text embeddings file (required when model_format = "clip")
+    /// Path to CLIP text embeddings file (required when model_format = "clip" and detection_mode = "softmax")
     pub text_embeddings_path: Option<PathBuf>,
+    /// Detection classification mode: "softmax" (default) or "catness_direction"
+    #[serde(default = "default_detection_mode")]
+    pub detection_mode: DetectionMode,
+    /// Path to catness direction binary file (required when detection_mode = "catness_direction")
+    pub catness_direction_path: Option<PathBuf>,
 }
 
 fn default_input_size() -> u32 {
@@ -104,6 +123,8 @@ impl Default for DetectorConfig {
             cat_class_id: default_cat_class_id(),
             model_format: default_model_format(),
             text_embeddings_path: None,
+            detection_mode: default_detection_mode(),
+            catness_direction_path: None,
         }
     }
 }
@@ -115,6 +136,24 @@ pub struct StorageConfig {
     pub image_format: String,
     #[serde(default = "default_jpeg_quality")]
     pub jpeg_quality: u8,
+    #[serde(default = "default_warn_threshold_gb")]
+    pub warn_threshold_gb: f64,
+    #[serde(default = "default_critical_threshold_gb")]
+    pub critical_threshold_gb: f64,
+    #[serde(default = "default_watchdog_interval_secs")]
+    pub watchdog_interval_secs: u64,
+}
+
+fn default_warn_threshold_gb() -> f64 {
+    5.0
+}
+
+fn default_critical_threshold_gb() -> f64 {
+    8.0
+}
+
+fn default_watchdog_interval_secs() -> u64 {
+    300
 }
 
 fn default_image_format() -> String {
@@ -131,6 +170,9 @@ impl Default for StorageConfig {
             output_dir: PathBuf::from("captures"),
             image_format: default_image_format(),
             jpeg_quality: default_jpeg_quality(),
+            warn_threshold_gb: default_warn_threshold_gb(),
+            critical_threshold_gb: default_critical_threshold_gb(),
+            watchdog_interval_secs: default_watchdog_interval_secs(),
         }
     }
 }
@@ -263,9 +305,28 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.detector.confidence_threshold < 0.0 || self.detector.confidence_threshold > 1.0 {
+        // Softmax mode outputs probabilities in [0,1]; catness direction scores range ~-0.3 to 0.4
+        if self.detector.detection_mode == DetectionMode::Softmax
+            && (self.detector.confidence_threshold < 0.0
+                || self.detector.confidence_threshold > 1.0)
+        {
             return Err(ConfigError::ValidationError(
-                "confidence_threshold must be between 0.0 and 1.0".to_string(),
+                "confidence_threshold must be between 0.0 and 1.0 for softmax mode".to_string(),
+            ));
+        }
+
+        if self.detector.detection_mode == DetectionMode::CatnessDirection
+            && self.detector.catness_direction_path.is_none()
+        {
+            return Err(ConfigError::ValidationError(
+                "catness_direction_path is required when detection_mode = \"catness_direction\""
+                    .to_string(),
+            ));
+        }
+
+        if self.storage.warn_threshold_gb >= self.storage.critical_threshold_gb {
+            return Err(ConfigError::ValidationError(
+                "warn_threshold_gb must be less than critical_threshold_gb".to_string(),
             ));
         }
 
@@ -455,6 +516,207 @@ device_path = missing bracket
         let result = Config::load(std::path::Path::new("/nonexistent/config.toml"));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::ReadError(_)));
+    }
+
+    #[test]
+    fn test_detection_mode_defaults_to_softmax() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+
+[storage]
+output_dir = "captures"
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(config.detector.detection_mode, DetectionMode::Softmax);
+        assert!(config.detector.catness_direction_path.is_none());
+    }
+
+    #[test]
+    fn test_catness_direction_mode_parses() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+detection_mode = "catness_direction"
+catness_direction_path = "models/catness_direction.bin"
+confidence_threshold = 0.15
+
+[storage]
+output_dir = "captures"
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(
+            config.detector.detection_mode,
+            DetectionMode::CatnessDirection
+        );
+        assert_eq!(
+            config.detector.catness_direction_path,
+            Some(PathBuf::from("models/catness_direction.bin"))
+        );
+        assert_eq!(config.detector.confidence_threshold, 0.15);
+    }
+
+    #[test]
+    fn test_catness_direction_requires_path() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+detection_mode = "catness_direction"
+confidence_threshold = 0.15
+
+[storage]
+output_dir = "captures"
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let result = Config::load(temp_file.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConfigError::ValidationError(_)));
+    }
+
+    #[test]
+    fn test_catness_direction_allows_threshold_outside_0_1() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+detection_mode = "catness_direction"
+catness_direction_path = "models/catness_direction.bin"
+confidence_threshold = -0.1
+
+[storage]
+output_dir = "captures"
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        // Should not fail validation — catness scores range ~-0.3 to 0.4
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(config.detector.confidence_threshold, -0.1);
+    }
+
+    #[test]
+    fn test_storage_watchdog_config_defaults() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+
+[storage]
+output_dir = "captures"
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(config.storage.warn_threshold_gb, 5.0);
+        assert_eq!(config.storage.critical_threshold_gb, 8.0);
+        assert_eq!(config.storage.watchdog_interval_secs, 300);
+    }
+
+    #[test]
+    fn test_storage_watchdog_config_custom() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+
+[storage]
+output_dir = "captures"
+warn_threshold_gb = 10.0
+critical_threshold_gb = 15.0
+watchdog_interval_secs = 60
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(config.storage.warn_threshold_gb, 10.0);
+        assert_eq!(config.storage.critical_threshold_gb, 15.0);
+        assert_eq!(config.storage.watchdog_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_storage_watchdog_warn_must_be_less_than_critical() {
+        let config_content = r#"
+[camera]
+
+[detector]
+model_path = "models/clip_vitb32_image.onnx"
+
+[storage]
+output_dir = "captures"
+warn_threshold_gb = 10.0
+critical_threshold_gb = 5.0
+
+[notification]
+enabled = false
+
+[tracking]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let result = Config::load(temp_file.path());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::ValidationError(_)
+        ));
     }
 
     #[test]

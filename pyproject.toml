@@ -40,6 +40,7 @@ docs = { features = ["docs"], no-default-feature = true, solve-group = "docs" }
 [tool.pixi.tasks]
 test-clip = "python scripts/test_clip_detection.py"
 check-leakage = "python scripts/check_image_leakage.py"
+generate-catness-direction = "python scripts/generate_catness_direction.py"
 generate-image-embeddings = """python scripts/generate_image_embeddings.py \
   --classes cat_overhead:prototype_images/cat_overhead \
             empty_room:prototype_images/empty_room_overhead \

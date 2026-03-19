@@ -12,4 +12,5 @@ pub mod service;
 pub mod session;
 pub mod storage;
 pub mod tracker;
+pub mod watchdog;
 pub mod web;

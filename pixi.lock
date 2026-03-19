@@ -183,7 +183,7 @@ packages:
 - pypi: ./
   name: cat-detector-scripts
   version: 0.1.0
-  sha256: e2d49e9df777ac66d7d21d3c3fa9be5b5d57a49d0bd553016ed066db82353119
+  sha256: c6105075b2481fca1386e5c12ffa90a996299c90630d989e9ce2b2c598304d3c
   requires_dist:
   - numpy
   - onnxruntime

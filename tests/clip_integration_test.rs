@@ -13,6 +13,7 @@ use std::path::Path;
 const CLIP_MODEL_PATH: &str = "models/clip_vitb32_image.onnx";
 const CLIP_TEXT_EMBEDDINGS_PATH: &str = "models/clip_text_embeddings.bin";
 const CLIP_IMAGE_EMBEDDINGS_PATH: &str = "models/clip_image_embeddings.bin";
+const CATNESS_DIRECTION_PATH: &str = "models/catness_direction.bin";
 
 fn clip_available() -> bool {
     Path::new(CLIP_MODEL_PATH).exists()
@@ -22,6 +23,20 @@ fn clip_available() -> bool {
 
 fn image_embeddings_available() -> bool {
     clip_available() && Path::new(CLIP_IMAGE_EMBEDDINGS_PATH).exists()
+}
+
+fn catness_direction_available() -> bool {
+    clip_available() && Path::new(CATNESS_DIRECTION_PATH).exists()
+}
+
+fn make_catness_detector(threshold: f32) -> cat_detector::detector::ClipDetector {
+    cat_detector::detector::ClipDetector::new_catness_direction(
+        Path::new(CLIP_MODEL_PATH),
+        Path::new(CATNESS_DIRECTION_PATH),
+        threshold,
+        15,
+    )
+    .expect("Failed to load CLIP model with catness direction")
 }
 
 fn make_clip_detector(threshold: f32) -> cat_detector::detector::ClipDetector {
@@ -369,6 +384,99 @@ mod clip_fewshot_detection {
     // Note: test_images/cat_with_litter_box_overhead_1.jpg was mislabeled — it contains
     // only a litter box and robot, no cat. Renamed to litter_box_and_robot_overhead_1.jpg.
     // The "known limitation" test that was here has been removed.
+}
+
+// === Catness direction tests ===
+// These use the catness direction vector (models/catness_direction.bin) instead of softmax.
+
+mod clip_catness_direction {
+    use super::*;
+    use cat_detector::detector::CatDetector;
+
+    #[tokio::test]
+    async fn test_catness_detects_overhead_cat() {
+        if !catness_direction_available() {
+            eprintln!("Skipping: catness direction file not available");
+            return;
+        }
+        let detector = make_catness_detector(0.10);
+        let img = image::open("test_images/cat_overhead/cat_overhead_center.jpg")
+            .expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            !detections.is_empty(),
+            "Catness direction should detect overhead cat"
+        );
+        assert!(
+            detections[0].confidence > 0.15,
+            "Expected catness score > 0.15, got {:.4}",
+            detections[0].confidence
+        );
+    }
+
+    #[tokio::test]
+    async fn test_catness_detects_tabby() {
+        if !catness_direction_available() {
+            eprintln!("Skipping: catness direction file not available");
+            return;
+        }
+        let detector = make_catness_detector(0.10);
+        let img = image::open("test_images/cat_tabby/cat_overhead_tabby1.jpg")
+            .expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            !detections.is_empty(),
+            "Catness direction should detect tabby cat"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_catness_rejects_empty_room() {
+        if !catness_direction_available() {
+            eprintln!("Skipping: catness direction file not available");
+            return;
+        }
+        let detector = make_catness_detector(0.10);
+        let img = image::open("test_images/empty_room/no_cat_overhead.jpg")
+            .expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            detections.is_empty(),
+            "Catness direction should not detect cat in empty room"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_catness_rejects_person() {
+        if !catness_direction_available() {
+            eprintln!("Skipping: catness direction file not available");
+            return;
+        }
+        let detector = make_catness_detector(0.10);
+        let img = image::open("test_images/person_overhead/person_overhead_1.jpg")
+            .expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            detections.is_empty(),
+            "Catness direction should not detect person as cat"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_catness_rejects_litter_box() {
+        if !catness_direction_available() {
+            eprintln!("Skipping: catness direction file not available");
+            return;
+        }
+        let detector = make_catness_detector(0.10);
+        let img = image::open("test_images/litter_box/litter_box_dirty_overhead_1.jpg")
+            .expect("Failed to load image");
+        let detections = detector.detect(&img).await.expect("Detection failed");
+        assert!(
+            detections.is_empty(),
+            "Catness direction should not detect litter box as cat"
+        );
+    }
 }
 
 mod clip_performance {
