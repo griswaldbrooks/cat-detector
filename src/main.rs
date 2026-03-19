@@ -1124,12 +1124,10 @@ async fn run_web_only(bind: String, port: u16) -> Result<()> {
             cfg.storage.critical_threshold_gb,
             cfg.storage.output_dir.clone(),
         );
-        if let cat_detector::watchdog::StorageStatus::Ok { used_bytes }
+        let (cat_detector::watchdog::StorageStatus::Ok { used_bytes }
         | cat_detector::watchdog::StorageStatus::Warning { used_bytes }
-        | cat_detector::watchdog::StorageStatus::Critical { used_bytes } = watchdog.check()
-        {
-            web_state.storage_used_bytes = used_bytes;
-        }
+        | cat_detector::watchdog::StorageStatus::Critical { used_bytes }) = watchdog.check();
+        web_state.storage_used_bytes = used_bytes;
     }
     let state = Arc::new(RwLock::new(web_state));
     let (frame_tx, frame_rx) = web::create_frame_channel();
