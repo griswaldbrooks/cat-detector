@@ -150,6 +150,18 @@ pixi run generate-image-embeddings \
 
 The script prints verification info: per-prototype norms (should all be 1.0) and pairwise cosine similarities (should show clear class separation).
 
+## Future Direction: Binary Threshold
+
+The multi-class softmax approach requires enumerating all negative classes — anything not explicitly listed can cause false positives (the original litter box problem). An alternative is **binary thresholding** on cosine similarity to the cat prototype alone:
+
+- Compute `cos(query, cat_prototype)` — if above threshold, it's a cat
+- No need to enumerate what else it might be
+- Simpler, no "forgot a class" failure mode
+
+With text embeddings this doesn't work well because absolute cosine similarities are poorly separated ("a photo of a cat" scores ~0.25 for everything). But image prototypes from the actual deployment camera produce much more discriminative similarities — a real overhead cat scores very differently from an empty room.
+
+The current multi-class system works well with sufficient prototype images per class, but binary thresholding is worth exploring as a simpler and more robust long-term approach.
+
 ## References
 
 1. Snell, J., Swersky, K., & Zemel, R. (2017). [Prototypical Networks for Few-shot Learning](https://arxiv.org/abs/1703.05175). *NeurIPS 2017*.
