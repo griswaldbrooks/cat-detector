@@ -34,6 +34,9 @@ config.toml
 *.deb
 
 
+# Playwright MCP
+.playwright-mcp/
+
 # Docusaurus
 /website/node_modules/
 /website/build/
