@@ -34,7 +34,7 @@ def onnx_session():
 class TestEncodeImage:
     def test_encode_single_image_shape_and_norm(self, onnx_session):
         """Encoding a single image produces a 512-dim L2-normalized vector."""
-        test_img = TEST_IMAGES_DIR / "cat_stock" / "cat1.jpg"
+        test_img = TEST_IMAGES_DIR / "cat_overhead" / "cat_curled.jpg"
         if not test_img.exists():
             pytest.skip("test image not found")
 
@@ -45,7 +45,7 @@ class TestEncodeImage:
 
     def test_encode_different_images_differ(self, onnx_session):
         """Different images produce different embeddings."""
-        img1 = TEST_IMAGES_DIR / "cat_stock" / "cat1.jpg"
+        img1 = TEST_IMAGES_DIR / "cat_overhead" / "cat_curled.jpg"
         img2 = TEST_IMAGES_DIR / "empty_room" / "no_cat_overhead.jpg"
         if not img1.exists() or not img2.exists():
             pytest.skip("test images not found")

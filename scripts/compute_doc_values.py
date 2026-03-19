@@ -34,7 +34,7 @@ PROMPTS = [
 
 # Representative images for documentation
 DOC_IMAGES = [
-    "cat_stock/cat1.jpg",
+    "cat_overhead/cat_curled.jpg",
     "cat_overhead/cat_overhead_litterbot1.jpg",
     "cat_tabby/cat_overhead_tabby1.jpg",
     "empty_room/no_cat_overhead.jpg",

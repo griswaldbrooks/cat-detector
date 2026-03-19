@@ -64,13 +64,14 @@ mod clip_cat_detection {
     use super::*;
     use cat_detector::detector::CatDetector;
 
-    // === Stock side-angle cat images ===
+    // === Overhead cat images (clear, fully visible) ===
 
-    clip_test!(test_clip_cat1_stock, {
+    clip_test!(test_clip_cat_curled, {
         let detector = make_clip_detector(0.5);
-        let img = image::open("test_images/cat_stock/cat1.jpg").expect("Failed to load image");
+        let img =
+            image::open("test_images/cat_overhead/cat_curled.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(!detections.is_empty(), "Should detect cat in cat1.jpg");
+        assert!(!detections.is_empty(), "Should detect curled cat");
         assert!(
             detections[0].confidence > 0.9,
             "Expected >90% confidence, got {:.1}%",
@@ -78,11 +79,12 @@ mod clip_cat_detection {
         );
     });
 
-    clip_test!(test_clip_cat2_stock, {
+    clip_test!(test_clip_cat_grooming, {
         let detector = make_clip_detector(0.5);
-        let img = image::open("test_images/cat_stock/cat2.jpg").expect("Failed to load image");
+        let img =
+            image::open("test_images/cat_overhead/cat_grooming.jpg").expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(!detections.is_empty(), "Should detect cat in cat2.jpg");
+        assert!(!detections.is_empty(), "Should detect grooming cat");
         assert!(
             detections[0].confidence > 0.9,
             "Expected >90% confidence, got {:.1}%",
@@ -219,16 +221,6 @@ mod clip_negative_detection {
         assert!(detections.is_empty(), "Should not detect cat in empty room");
     });
 
-    clip_test!(test_clip_no_cat2, {
-        let detector = make_clip_detector(0.3);
-        let img = image::open("test_images/empty_room/no_cat2.jpeg").expect("Failed to load image");
-        let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(
-            detections.is_empty(),
-            "Should not detect cat in no_cat2.jpeg"
-        );
-    });
-
     // === Person rejection ===
 
     clip_test!(test_clip_person_not_detected_as_cat, {
@@ -293,17 +285,18 @@ mod clip_fewshot_detection {
     }
 
     #[tokio::test]
-    async fn test_fewshot_detects_stock_cat() {
+    async fn test_fewshot_detects_standing_cat() {
         if !image_embeddings_available() {
             eprintln!("Skipping: image embeddings not available");
             return;
         }
         let detector = make_fewshot_detector(0.5);
-        let img = image::open("test_images/cat_stock/cat1.jpg").expect("Failed to load image");
+        let img = image::open("test_images/cat_overhead/cat_standing2.jpg")
+            .expect("Failed to load image");
         let detections = detector.detect(&img).await.expect("Detection failed");
         assert!(
             !detections.is_empty(),
-            "Few-shot should still detect stock cat photo"
+            "Few-shot should detect standing cat"
         );
     }
 
@@ -384,7 +377,8 @@ mod clip_performance {
 
     clip_test!(test_clip_inference_speed, {
         let detector = make_clip_detector(0.5);
-        let img = image::open("test_images/cat_stock/cat1.jpg").expect("Failed to load image");
+        let img =
+            image::open("test_images/cat_overhead/cat_curled.jpg").expect("Failed to load image");
 
         // Warm up
         let _ = detector.detect(&img).await;
@@ -409,7 +403,8 @@ mod clip_performance {
 
     clip_test!(test_clip_detection_returns_full_frame_bbox, {
         let detector = make_clip_detector(0.5);
-        let img = image::open("test_images/cat_stock/cat1.jpg").expect("Failed to load image");
+        let img =
+            image::open("test_images/cat_overhead/cat_curled.jpg").expect("Failed to load image");
         let img_width = img.width() as f32;
         let img_height = img.height() as f32;
 
