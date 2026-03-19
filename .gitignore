@@ -7,8 +7,8 @@
 # ONNX Runtime (download separately - see README)
 /onnxruntime/
 
-# Test images (personal photos)
-/test_images/
+# Catbox captures (unsorted production data, not tracked)
+/test_images/catbox_captures/
 
 # Runtime files
 /captures/
@@ -33,11 +33,6 @@ config.toml
 # Debian packages
 *.deb
 
-# Prototype images (curated reference photos, local only)
-/prototype_images/cat_overhead/
-/prototype_images/empty_room_overhead/
-/prototype_images/person_overhead/
-/prototype_images/litter_box_overhead/
 
 # Docusaurus
 /website/node_modules/

@@ -41,13 +41,12 @@ def main():
     session = ort.InferenceSession(str(CLIP_MODEL), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
 
-    # Collect all test images
-    image_paths = sorted(TEST_IMAGES_DIR.glob("*.jpg")) + sorted(TEST_IMAGES_DIR.glob("*.jpeg"))
-
-    # Also check for catbox captures
-    catbox_dir = TEST_IMAGES_DIR / "catbox_captures"
-    if catbox_dir.exists():
-        image_paths += sorted(catbox_dir.glob("*.jpg")) + sorted(catbox_dir.glob("*.png"))
+    # Collect all test images recursively (skip catbox_captures)
+    image_paths = sorted(
+        p for p in TEST_IMAGES_DIR.rglob("*")
+        if p.suffix.lower() in (".jpg", ".jpeg", ".png")
+        and "catbox_captures" not in p.parts
+    )
 
     print(f"\nTesting {len(image_paths)} images (threshold={CONFIDENCE_THRESHOLD})")
     print(f"{'Image':<55} {'cat_sim':>8} {'room_sim':>8} {'person_sim':>10} {'cat_prob':>8} {'2-class':>8} {'Result':>8}")

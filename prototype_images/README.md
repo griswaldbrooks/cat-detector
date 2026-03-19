@@ -35,9 +35,9 @@ pixi run generate-image-embeddings
 
 ## Image Sources
 
-Images are selected from:
-- `test_images/cat_overhead_*.jpg` — overhead cat photos
-- `test_images/catbox_captures/` — production captures from catbox
-- `test_images/no_cat_overhead.jpg` — empty room reference
-- `test_images/person_images/` — overhead person photos
-- `test_images/litter_*.jpg` — litter box edge cases
+Prototype images are pulled directly from catbox production captures. They must
+**never** overlap with test images — run `pixi run check-leakage` to verify.
+
+Sources:
+- `catbox` SSH captures (cat entry/sample/exit frames from production sessions)
+- Person and litter box images captured specifically for prototype training

@@ -34,7 +34,7 @@ def onnx_session():
 class TestEncodeImage:
     def test_encode_single_image_shape_and_norm(self, onnx_session):
         """Encoding a single image produces a 512-dim L2-normalized vector."""
-        test_img = TEST_IMAGES_DIR / "cat1.jpg"
+        test_img = TEST_IMAGES_DIR / "cat_stock" / "cat1.jpg"
         if not test_img.exists():
             pytest.skip("test image not found")
 
@@ -45,8 +45,8 @@ class TestEncodeImage:
 
     def test_encode_different_images_differ(self, onnx_session):
         """Different images produce different embeddings."""
-        img1 = TEST_IMAGES_DIR / "cat1.jpg"
-        img2 = TEST_IMAGES_DIR / "no_cat_overhead.jpg"
+        img1 = TEST_IMAGES_DIR / "cat_stock" / "cat1.jpg"
+        img2 = TEST_IMAGES_DIR / "empty_room" / "no_cat_overhead.jpg"
         if not img1.exists() or not img2.exists():
             pytest.skip("test images not found")
 
@@ -136,7 +136,7 @@ class TestAcceptance:
 
     def test_4class_fixes_litter_box_false_positive(self, onnx_session):
         """Dirty litter box should NOT be detected as cat with image prototypes."""
-        img = TEST_IMAGES_DIR / "litter_box_dirty_overhead_1.jpg"
+        img = TEST_IMAGES_DIR / "litter_box" / "litter_box_dirty_overhead_1.jpg"
         emb_file = Path(__file__).parent.parent.parent / "models" / "clip_image_embeddings.bin"
         if not img.exists():
             pytest.skip("litter box test image not found")
@@ -154,7 +154,7 @@ class TestAcceptance:
 
     def test_4class_fixes_litter_robot_false_positive(self, onnx_session):
         """Moving litter robot should NOT be detected as cat with image prototypes."""
-        img = TEST_IMAGES_DIR / "litter_robot_moving_overhead_1.jpg"
+        img = TEST_IMAGES_DIR / "litter_box" / "litter_robot_moving_overhead_1.jpg"
         emb_file = Path(__file__).parent.parent.parent / "models" / "clip_image_embeddings.bin"
         if not img.exists():
             pytest.skip("litter robot test image not found")
@@ -172,7 +172,7 @@ class TestAcceptance:
 
     def test_4class_fixes_person_false_positive(self, onnx_session):
         """Overhead person at catbox should NOT be detected as cat."""
-        img = TEST_IMAGES_DIR / "person_overhead_catbox_1.jpg"
+        img = TEST_IMAGES_DIR / "person_overhead" / "person_overhead_catbox_1.jpg"
         emb_file = Path(__file__).parent.parent.parent / "models" / "clip_image_embeddings.bin"
         if not img.exists():
             pytest.skip("person test image not found")
@@ -191,7 +191,7 @@ class TestAcceptance:
     def test_4class_rejects_litter_box_and_robot(self, onnx_session):
         """Litter box + robot (no cat) should not be detected as cat.
         Note: this image was previously mislabeled as 'cat_with_litter_box'."""
-        img = TEST_IMAGES_DIR / "litter_box_and_robot_overhead_1.jpg"
+        img = TEST_IMAGES_DIR / "litter_box" / "litter_box_and_robot_overhead_1.jpg"
         emb_file = Path(__file__).parent.parent.parent / "models" / "clip_image_embeddings.bin"
         if not img.exists():
             pytest.skip("litter box+robot test image not found")

@@ -34,18 +34,18 @@ PROMPTS = [
 
 # Representative images for documentation
 DOC_IMAGES = [
-    "cat1.jpg",
-    "cat_overhead_litterbot1.jpg",
-    "cat_overhead_tabby1.jpg",
-    "no_cat_overhead.jpg",
-    "litter_box_dirty_overhead_1.jpg",
-    "litter_robot_moving_overhead_1.jpg",
-    "litter_box_and_robot_overhead_1.jpg",
+    "cat_stock/cat1.jpg",
+    "cat_overhead/cat_overhead_litterbot1.jpg",
+    "cat_tabby/cat_overhead_tabby1.jpg",
+    "empty_room/no_cat_overhead.jpg",
+    "litter_box/litter_box_dirty_overhead_1.jpg",
+    "litter_box/litter_robot_moving_overhead_1.jpg",
+    "litter_box/litter_box_and_robot_overhead_1.jpg",
 ]
 
 PERSON_IMAGES = [
-    "person_images/person_overhead_1.jpg",
-    "person_overhead_catbox_1.jpg",
+    "person_overhead/person_overhead_1.jpg",
+    "person_overhead/person_overhead_catbox_1.jpg",
 ]
 
 

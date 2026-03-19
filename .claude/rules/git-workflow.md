@@ -17,7 +17,6 @@ description: Git workflow conventions for the cat-detector project
 
 ## Never Commit
 - `config.toml` (user-specific config; `config.example.toml` is tracked)
-- `test_images/` (local test data)
 - `models/*.onnx` (large binary files)
 - `onnxruntime/` (local runtime installation)
 - `.env` or files containing secrets
