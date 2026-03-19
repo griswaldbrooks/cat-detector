@@ -18,7 +18,7 @@ The current zero-shot detector compares camera frames against three **text** emb
 | Dirty litter box (no cat) | 55.7% | **False positive** | Litter box texture resembles "cat" more than "room" |
 | Litter robot moving (no cat) | 87.2% | **False positive** | Moving robot parts trigger high cat similarity |
 | Person from overhead | 75.3% | **False positive** | Overhead person silhouette matches "cat" > "person" |
-| Cat next to litter box | 47.6% | **False negative** | Litter box pulls similarity toward "room" |
+| Litter box + robot (mislabeled) | 47.6% | Below threshold | Actually correct — no cat in image |
 
 The root cause is that text embeddings like "a photo of a cat" are too generic — they encode a typical internet photo of a cat, not the specific overhead view from our camera. With the high softmax temperature (τ=100) amplifying small cosine similarity differences, even a 0.005 delta becomes a confident classification.
 
@@ -129,10 +129,10 @@ Selected images are copied into `prototype_images/<class>/` for reproducible emb
 | **Dirty litter box** | **55.7%** (FP) | **0.00%** | **Fixed** |
 | **Litter robot moving** | **87.2%** (FP) | **0.20%** | **Fixed** |
 | **Overhead person at catbox** | **75.3%** (FP) | **0.40%** | **Fixed** |
-| **Cat with litter box** | **47.6%** (FN) | **0.00%** (FN) | Remains — see below |
+| **Litter box + robot** | **47.6%** (FP) | **0.00%** | **Fixed** |
 
-:::note Remaining false negative
-The "cat with litter box" image remains a false negative because the litter box dominates the visual features (litter similarity 0.972 vs cat 0.842). With only 2 litter box prototype images, the litter class is very narrowly tuned. This can likely be improved by curating more diverse litter box prototype images or tuning the softmax temperature.
+:::note Mislabeled test image
+The image previously called "cat with litter box" was mislabeled — it actually contains only a litter box and robot with no cat present. The few-shot detector correctly rejects it (0.00%), which was always the right answer.
 :::
 
 ## Embedding Generation

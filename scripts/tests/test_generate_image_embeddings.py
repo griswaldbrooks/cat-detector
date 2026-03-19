@@ -188,13 +188,13 @@ class TestAcceptance:
 
         assert cat_prob < 0.5, f"Person should not be cat, got {cat_prob:.4f}"
 
-    @pytest.mark.xfail(reason="Known limitation: litter box dominates when cat and litter box coexist. Needs more litter box prototype variety or temperature tuning.")
-    def test_4class_fixes_cat_with_litter_box_false_negative(self, onnx_session):
-        """Cat next to litter box should still be detected as cat."""
-        img = TEST_IMAGES_DIR / "cat_with_litter_box_overhead_1.jpg"
+    def test_4class_rejects_litter_box_and_robot(self, onnx_session):
+        """Litter box + robot (no cat) should not be detected as cat.
+        Note: this image was previously mislabeled as 'cat_with_litter_box'."""
+        img = TEST_IMAGES_DIR / "litter_box_and_robot_overhead_1.jpg"
         emb_file = Path(__file__).parent.parent.parent / "models" / "clip_image_embeddings.bin"
         if not img.exists():
-            pytest.skip("cat+litter test image not found")
+            pytest.skip("litter box+robot test image not found")
         if not emb_file.exists():
             pytest.skip("image embeddings not generated yet")
 
@@ -205,7 +205,7 @@ class TestAcceptance:
         exps = [np.exp((s - max_sim) * 100.0) for s in sims]
         cat_prob = exps[0] / sum(exps)
 
-        assert cat_prob >= 0.5, f"Cat with litter box should be detected, got {cat_prob:.4f}"
+        assert cat_prob < 0.5, f"Litter box+robot should not be cat, got {cat_prob:.4f}"
 
 
 class TestCLI:

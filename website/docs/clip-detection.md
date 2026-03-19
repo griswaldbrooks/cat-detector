@@ -102,9 +102,9 @@ If below threshold, an empty detection list is returned.
 | **litter_box_dirty_overhead_1.jpg** | **0.2123** | **0.2070** | **0.1964** | **55.7%** | **CAT** | ❌ FP |
 | **litter_robot_moving_overhead_1.jpg** | **0.2350** | **0.2145** | **0.1953** | **87.2%** | **CAT** | ❌ FP |
 | **person_overhead_catbox_1.jpg** | **0.2216** | **0.1777** | **0.2100** | **75.3%** | **CAT** | ❌ FP |
-| **cat_with_litter_box_overhead_1.jpg** | **0.2131** | **0.2103** | **0.2025** | **47.6%** | **—** | ❌ FN |
+| **litter_box_and_robot_overhead_1.jpg** | **0.2131** | **0.2103** | **0.2025** | **47.6%** | **—** | ✅ |
 
-**Summary**: 5/9 correct, 3 false positives, 1 false negative. The false positives occur because there is no text embedding for "litter box" — scenes containing litter boxes are slightly more similar to "a photo of a cat" than to "a photo of an empty room", and the high temperature amplifies this tiny difference into a confident (wrong) prediction.
+**Summary**: 6/9 correct, 3 false positives. The false positives occur because there is no text embedding for "litter box" — scenes containing litter boxes are slightly more similar to "a photo of a cat" than to "a photo of an empty room", and the high temperature amplifies this tiny difference into a confident (wrong) prediction. (Note: this image was previously mislabeled as "cat_with_litter_box" but contains no cat — the 47.6% is actually below threshold, so it's correctly rejected.)
 
 ### Known Limitations
 

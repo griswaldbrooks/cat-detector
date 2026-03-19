@@ -40,7 +40,7 @@ DOC_IMAGES = [
     "no_cat_overhead.jpg",
     "litter_box_dirty_overhead_1.jpg",
     "litter_robot_moving_overhead_1.jpg",
-    "cat_with_litter_box_overhead_1.jpg",
+    "litter_box_and_robot_overhead_1.jpg",
 ]
 
 PERSON_IMAGES = [

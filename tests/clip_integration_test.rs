@@ -369,24 +369,9 @@ mod clip_fewshot_detection {
         );
     }
 
-    // === Known limitation ===
-
-    #[tokio::test]
-    #[ignore = "Known limitation: litter box dominates when cat and litter box coexist (0.972 vs 0.842 similarity)"]
-    async fn test_fewshot_detects_cat_with_litter_box() {
-        if !image_embeddings_available() {
-            eprintln!("Skipping: image embeddings not available");
-            return;
-        }
-        let detector = make_fewshot_detector(0.5);
-        let img = image::open("test_images/cat_with_litter_box_overhead_1.jpg")
-            .expect("Failed to load image");
-        let detections = detector.detect(&img).await.expect("Detection failed");
-        assert!(
-            !detections.is_empty(),
-            "Cat next to litter box should still be detected"
-        );
-    }
+    // Note: test_images/cat_with_litter_box_overhead_1.jpg was mislabeled — it contains
+    // only a litter box and robot, no cat. Renamed to litter_box_and_robot_overhead_1.jpg.
+    // The "known limitation" test that was here has been removed.
 }
 
 mod clip_performance {
