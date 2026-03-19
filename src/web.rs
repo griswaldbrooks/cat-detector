@@ -744,20 +744,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             font-size: 18px;
             color: #4ade80;
         }
-        .info-btn {
-            background: none;
-            border: 1px solid #555;
-            color: #aaa;
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            cursor: pointer;
-            font-size: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .info-btn:hover { border-color: #888; color: #eee; }
         .system-info-panel {
             display: none;
             background: #16213e;
@@ -827,7 +813,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <nav style="display:flex;align-items:center;gap:20px;">
                 <a href="/sessions" style="color:#60a5fa;text-decoration:none;font-size:14px;">Sessions</a>
                 <a href="/config" style="color:#60a5fa;text-decoration:none;font-size:14px;">Config</a>
-                <button class="info-btn" id="infoBtn" title="System Info">i</button>
+                <a href="javascript:void(0)" id="infoBtn" style="color:#60a5fa;text-decoration:none;font-size:14px;">System</a>
                 <div class="status-indicator">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Connecting...</span>
@@ -951,7 +937,8 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
         // System info panel
         var infoLoaded = false;
-        document.getElementById('infoBtn').addEventListener('click', function() {
+        document.getElementById('infoBtn').addEventListener('click', function(e) {
+            e.preventDefault();
             var panel = document.getElementById('systemInfoPanel');
             panel.classList.toggle('visible');
             if (!infoLoaded) {
