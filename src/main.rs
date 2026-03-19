@@ -548,6 +548,10 @@ fn setup_web(
             ),
         });
         web_app_state.config = Some(config.clone());
+        web_app_state.storage_warn_threshold_bytes =
+            (config.storage.warn_threshold_gb * 1_000_000_000.0) as u64;
+        web_app_state.storage_critical_threshold_bytes =
+            (config.storage.critical_threshold_gb * 1_000_000_000.0) as u64;
         let state = Arc::new(RwLock::new(web_app_state));
         let (tx, rx) = web::create_frame_channel();
 
@@ -731,12 +735,18 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         // Periodic storage watchdog check
         if now.duration_since(last_watchdog_check) >= watchdog_interval {
             last_watchdog_check = now;
-            match ctx.watchdog.check() {
-                StorageStatus::Ok { used_bytes } => {
+            let status = ctx.watchdog.check();
+            let used_bytes = match &status {
+                StorageStatus::Ok { used_bytes } => *used_bytes,
+                StorageStatus::Warning { used_bytes } => *used_bytes,
+                StorageStatus::Critical { used_bytes } => *used_bytes,
+            };
+            match &status {
+                StorageStatus::Ok { .. } => {
                     let gb = used_bytes as f64 / 1_000_000_000.0;
                     tracing::debug!("Storage watchdog: {:.2} GB used (ok)", gb);
                 }
-                StorageStatus::Warning { used_bytes } => {
+                StorageStatus::Warning { .. } => {
                     let gb = used_bytes as f64 / 1_000_000_000.0;
                     tracing::warn!(
                         "Storage watchdog: {:.2} GB used (warning threshold: {:.1} GB)",
@@ -744,7 +754,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         config.storage.warn_threshold_gb
                     );
                 }
-                StorageStatus::Critical { used_bytes } => {
+                StorageStatus::Critical { .. } => {
                     let gb = used_bytes as f64 / 1_000_000_000.0;
                     tracing::error!(
                         "Storage watchdog: {:.2} GB used (CRITICAL — recording disabled, threshold: {:.1} GB)",
@@ -752,6 +762,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         config.storage.critical_threshold_gb
                     );
                 }
+            }
+            #[cfg(feature = "web")]
+            if let Some(ref ws) = ctx.web_state {
+                ws.write().await.storage_used_bytes = used_bytes;
             }
         }
 
@@ -1088,7 +1102,36 @@ async fn run_web_only(bind: String, port: u16) -> Result<()> {
         stream_fps: 5,
     };
 
-    let state = Arc::new(RwLock::new(web::WebAppState::new()));
+    // Load config if available, for storage thresholds
+    let standalone_config = config::Config::load(std::path::Path::new("config.toml")).ok();
+    let mut web_state = web::WebAppState::new();
+    web_state.system_info = Some(web::SystemInfoResponse {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        model_name: "(standalone)".to_string(),
+        model_format: "none".to_string(),
+        confidence_threshold: 0.0,
+        detection_interval_ms: 0,
+        camera_resolution: "640x480".to_string(),
+    });
+    if let Some(ref cfg) = standalone_config {
+        web_state.storage_warn_threshold_bytes =
+            (cfg.storage.warn_threshold_gb * 1_000_000_000.0) as u64;
+        web_state.storage_critical_threshold_bytes =
+            (cfg.storage.critical_threshold_gb * 1_000_000_000.0) as u64;
+        // Do an initial size check
+        let mut watchdog = cat_detector::watchdog::StorageWatchdog::new(
+            cfg.storage.warn_threshold_gb,
+            cfg.storage.critical_threshold_gb,
+            cfg.storage.output_dir.clone(),
+        );
+        if let cat_detector::watchdog::StorageStatus::Ok { used_bytes }
+        | cat_detector::watchdog::StorageStatus::Warning { used_bytes }
+        | cat_detector::watchdog::StorageStatus::Critical { used_bytes } = watchdog.check()
+        {
+            web_state.storage_used_bytes = used_bytes;
+        }
+    }
+    let state = Arc::new(RwLock::new(web_state));
     let (frame_tx, frame_rx) = web::create_frame_channel();
 
     // Setup shutdown signal handler

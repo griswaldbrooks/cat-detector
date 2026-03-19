@@ -62,6 +62,12 @@ pub struct WebAppState {
     pub system_info: Option<SystemInfoResponse>,
     /// Running configuration (set at startup)
     pub config: Option<Config>,
+    /// Current storage usage in bytes
+    pub storage_used_bytes: u64,
+    /// Warning threshold in bytes
+    pub storage_warn_threshold_bytes: u64,
+    /// Critical threshold in bytes
+    pub storage_critical_threshold_bytes: u64,
 }
 
 impl Default for WebAppState {
@@ -78,6 +84,9 @@ impl Default for WebAppState {
             captures_dir: PathBuf::from("captures"),
             system_info: None,
             config: None,
+            storage_used_bytes: 0,
+            storage_warn_threshold_bytes: 0,
+            storage_critical_threshold_bytes: 0,
         }
     }
 }
@@ -376,6 +385,11 @@ async fn status_handler(State(state): State<SharedWebState>) -> Json<StatusRespo
 #[cfg(feature = "web")]
 async fn system_info_handler(State(state): State<SharedWebState>) -> impl IntoResponse {
     let state = state.read().await;
+    let storage_status = storage_status_string(
+        state.storage_used_bytes,
+        state.storage_warn_threshold_bytes,
+        state.storage_critical_threshold_bytes,
+    );
     match &state.system_info {
         Some(info) => Json(serde_json::json!({
             "model_name": info.model_name,
@@ -383,9 +397,24 @@ async fn system_info_handler(State(state): State<SharedWebState>) -> impl IntoRe
             "confidence_threshold": info.confidence_threshold,
             "detection_interval_ms": info.detection_interval_ms,
             "camera_resolution": info.camera_resolution,
+            "storage_used_bytes": state.storage_used_bytes,
+            "storage_warn_threshold_bytes": state.storage_warn_threshold_bytes,
+            "storage_critical_threshold_bytes": state.storage_critical_threshold_bytes,
+            "storage_status": storage_status,
         }))
         .into_response(),
         None => Json(serde_json::json!({})).into_response(),
+    }
+}
+
+/// Compute storage status string from usage and thresholds
+fn storage_status_string(used: u64, warn: u64, critical: u64) -> &'static str {
+    if critical > 0 && used >= critical {
+        "critical"
+    } else if warn > 0 && used >= warn {
+        "warning"
+    } else {
+        "ok"
     }
 }
 
@@ -761,6 +790,34 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             color: #eee;
             font-size: 15px;
         }
+        .storage-bar-container {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #1e3a5f;
+        }
+        .storage-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .storage-bar-label .storage-bar-value { color: #eee; text-transform: none; }
+        .storage-bar {
+            height: 10px;
+            background: #1a1a2e;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .storage-bar-fill {
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+        }
+        .storage-bar-fill.ok { background-color: #22c55e; }
+        .storage-bar-fill.warning { background-color: #eab308; }
+        .storage-bar-fill.critical { background-color: #ef4444; }
     </style>
 </head>
 <body>
@@ -781,6 +838,15 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         <div class="system-info-panel" id="systemInfoPanel">
             <h2>System Info</h2>
             <div class="info-grid" id="systemInfoGrid">Loading...</div>
+            <div class="storage-bar-container" id="storageBarContainer" style="display:none;">
+                <div class="storage-bar-label">
+                    <span>Storage</span>
+                    <span class="storage-bar-value" id="storageBarText"></span>
+                </div>
+                <div class="storage-bar">
+                    <div class="storage-bar-fill ok" id="storageBarFill" style="width:0%"></div>
+                </div>
+            </div>
         </div>
 
         <div class="main-content">
@@ -903,6 +969,22 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     grid.innerHTML = items.map(function(item) {
                         return '<div class="info-item"><div class="info-label">' + item[0] + '</div><div class="info-value">' + item[1] + '</div></div>';
                     }).join('');
+                    if (info.storage_used_bytes != null && info.storage_critical_threshold_bytes > 0) {
+                        var used = info.storage_used_bytes;
+                        var critical = info.storage_critical_threshold_bytes;
+                        var pct = Math.min(100, Math.round(used / critical * 100));
+                        var status = info.storage_status || 'ok';
+                        function formatBytes(b) {
+                            if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+                            if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+                            return Math.round(b / 1024) + ' KB';
+                        }
+                        document.getElementById('storageBarContainer').style.display = '';
+                        document.getElementById('storageBarText').textContent = formatBytes(used) + ' / ' + formatBytes(critical) + ' (' + status + ')';
+                        var fill = document.getElementById('storageBarFill');
+                        fill.style.width = pct + '%';
+                        fill.className = 'storage-bar-fill ' + status;
+                    }
                 }).catch(function() {
                     document.getElementById('systemInfoGrid').textContent = 'Failed to load';
                     infoLoaded = false;
@@ -1900,6 +1982,14 @@ mod tests {
 
     #[cfg(feature = "web")]
     #[test]
+    fn test_dashboard_has_storage_bar() {
+        assert!(DASHBOARD_HTML.contains("storage-bar"));
+        assert!(DASHBOARD_HTML.contains("storage_used_bytes"));
+        assert!(DASHBOARD_HTML.contains("storage_status"));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
     fn test_session_detail_has_lightbox_modal() {
         assert!(SESSION_DETAIL_HTML.contains("lightbox-overlay"));
         assert!(SESSION_DETAIL_HTML.contains("lightbox-img"));
@@ -2008,6 +2098,129 @@ mod tests {
         let json_str = String::from_utf8(body.to_vec()).unwrap();
         assert!(json_str.contains("clip_vitb32_image.onnx"));
         assert!(json_str.contains("\"detection_interval_ms\":500"));
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_system_info_endpoint_returns_storage_data() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut web_state = WebAppState::new();
+        web_state.system_info = Some(SystemInfoResponse {
+            version: "1.0.0".to_string(),
+            model_name: "clip_vitb32_image.onnx".to_string(),
+            model_format: "clip".to_string(),
+            confidence_threshold: 0.5,
+            detection_interval_ms: 500,
+            camera_resolution: "640x480".to_string(),
+        });
+        web_state.storage_used_bytes = 500_000_000;
+        web_state.storage_warn_threshold_bytes = 5_000_000_000;
+        web_state.storage_critical_threshold_bytes = 8_000_000_000;
+        let state = Arc::new(RwLock::new(web_state));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system-info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["storage_used_bytes"], 500_000_000u64);
+        assert_eq!(json["storage_warn_threshold_bytes"], 5_000_000_000u64);
+        assert_eq!(json["storage_critical_threshold_bytes"], 8_000_000_000u64);
+        assert_eq!(json["storage_status"], "ok");
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_system_info_storage_status_warning() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut web_state = WebAppState::new();
+        web_state.system_info = Some(SystemInfoResponse {
+            version: "1.0.0".to_string(),
+            model_name: "test".to_string(),
+            model_format: "clip".to_string(),
+            confidence_threshold: 0.5,
+            detection_interval_ms: 500,
+            camera_resolution: "640x480".to_string(),
+        });
+        // 6GB used, warn at 5GB, critical at 8GB → warning
+        web_state.storage_used_bytes = 6_000_000_000;
+        web_state.storage_warn_threshold_bytes = 5_000_000_000;
+        web_state.storage_critical_threshold_bytes = 8_000_000_000;
+        let state = Arc::new(RwLock::new(web_state));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system-info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["storage_status"], "warning");
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn test_system_info_storage_status_critical() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut web_state = WebAppState::new();
+        web_state.system_info = Some(SystemInfoResponse {
+            version: "1.0.0".to_string(),
+            model_name: "test".to_string(),
+            model_format: "clip".to_string(),
+            confidence_threshold: 0.5,
+            detection_interval_ms: 500,
+            camera_resolution: "640x480".to_string(),
+        });
+        // 9GB used, critical at 8GB → critical
+        web_state.storage_used_bytes = 9_000_000_000;
+        web_state.storage_warn_threshold_bytes = 5_000_000_000;
+        web_state.storage_critical_threshold_bytes = 8_000_000_000;
+        let state = Arc::new(RwLock::new(web_state));
+        let (_tx, rx) = create_frame_channel();
+        let app = create_router(state, rx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system-info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["storage_status"], "critical");
     }
 
     #[cfg(feature = "web")]
