@@ -11,7 +11,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Technical',
-      items: ['clip-detection', 'few-shot-detection', 'model-evaluation'],
+      items: ['clip-detection', 'few-shot-detection', 'catness-direction', 'model-evaluation'],
     },
     'claude-code-guide',
   ],
