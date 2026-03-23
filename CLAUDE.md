@@ -38,7 +38,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 | `session.rs` | `CatSession` model + `SessionManager` (JSON persistence) |
 | `service.rs` | Systemd service install/uninstall |
 | `watchdog.rs` | `StorageWatchdog` — monitors captures dir size, blocks recording at critical threshold |
-| `web.rs` | Axum dashboard, MJPEG stream, session list/detail pages, capture serving |
+| `web.rs` | Axum dashboard (with system info panel, storage bar, image lightbox), MJPEG stream, session list/detail pages, capture serving |
 | `lib.rs` | Library exports |
 
 ## Key Details
@@ -51,7 +51,7 @@ ORT_DYLIB_PATH=./onnxruntime/lib/libonnxruntime.so ./target/release/cat-detector
 - **Logging**: `tracing` crate
 - **Video**: FFmpeg pipe (requires `ffmpeg` on system). Records with wallclock timestamps for real-time playback
 - **Signal notifications**: signal-cli with linked device support (`-a` account flag), video attachments on exit, `test-notification` CLI command
-- **Tests**: 115 unit + 1 ignored + 26 CLIP integration; all traits have Mock* implementations
+- **Tests**: 132 unit + 1 ignored + 26 CLIP integration; all traits have Mock* implementations
 - **Deployment guide**: `docs/deployment.md` — full setup including permissions, signal-cli, systemd
 - **Deploy target**: Dell Optiplex 3040M (catbox) via `scripts/deploy.sh`
 - **Python scripts**: managed via [pixi](https://pixi.sh) (`pixi run test-clip`, `pixi run -e clip generate-embeddings`)
